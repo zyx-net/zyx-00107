@@ -1,4 +1,4 @@
-import { WorkOrder, Timeline, FilterState, Role, ExportResult, ImportResult } from '../types';
+import { WorkOrder, Timeline, FilterState, Role, ExportResult, ImportResult, ImportDraft } from '../types';
 
 const STORAGE_KEYS = {
   WORK_ORDERS: 'repair_work_orders',
@@ -7,6 +7,7 @@ const STORAGE_KEYS = {
   FILTERS: 'repair_filters',
   EXPORTS: 'repair_exports',
   IMPORTS: 'repair_imports',
+  IMPORT_DRAFT: 'repair_import_draft',
 } as const;
 
 export const storage = {
@@ -66,6 +67,19 @@ export const storage = {
 
   setImports(imports: ImportResult[]): void {
     localStorage.setItem(STORAGE_KEYS.IMPORTS, JSON.stringify(imports));
+  },
+
+  getImportDraft(): ImportDraft | null {
+    const data = localStorage.getItem(STORAGE_KEYS.IMPORT_DRAFT);
+    return data ? JSON.parse(data) : null;
+  },
+
+  setImportDraft(draft: ImportDraft | null): void {
+    if (draft) {
+      localStorage.setItem(STORAGE_KEYS.IMPORT_DRAFT, JSON.stringify(draft));
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.IMPORT_DRAFT);
+    }
   },
 
   clearAll(): void {

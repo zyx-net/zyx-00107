@@ -10,7 +10,10 @@ import {
   ExportResult,
   ImportResult,
   ImportError,
-  ImportErrorType 
+  ImportErrorType,
+  ImportDraft,
+  RowValidationResult,
+  PartialImportResult 
 } from '../types';
 import { 
   initialWorkOrders, 
@@ -40,6 +43,14 @@ interface AppActions {
   importOrders: (csvData: string[][]) => { success: boolean; result?: ImportResult; error?: string };
   validateImportData: (csvData: string[][]) => { valid: boolean; errors: ImportError[]; validOrders: Partial<WorkOrder>[] };
   getImports: () => ImportResult[];
+  createImportDraft: (fileName: string, originalHeaders: string[], csvData: string[][], targetHeaders: string[], headerMapping: Record<number, number>) => ImportDraft;
+  updateImportDraft: (draft: Partial<ImportDraft>) => void;
+  clearImportDraft: () => void;
+  validateRow: (rowIndex: number, correctedData?: Record<string, string>) => RowValidationResult;
+  validateAllRows: () => void;
+  correctRow: (rowIndex: number, corrections: Record<string, string>) => void;
+  setConflictResolution: (rowIndex: number, resolution: 'skip' | 'overwrite' | 'new') => void;
+  importPartialOrders: (rowsToImport: number[], rowsToSkip: number[]) => { success: boolean; result?: PartialImportResult; error?: string };
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 15);
@@ -82,6 +93,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
   exports: storage.getExports(),
   imports: storage.getImports(),
   selectedOrderId: null,
+  currentImportDraft: storage.getImportDraft(),
 
   setRole: (role) => {
     storage.setCurrentRole(role);
@@ -812,6 +824,391 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       exports: [],
       imports: [],
       selectedOrderId: null,
+      currentImportDraft: null,
     });
+  },
+
+  createImportDraft: (fileName, originalHeaders, csvData, targetHeaders, headerMapping) => {
+    const state = get();
+    const draftId = generateId();
+    const rowResults: RowValidationResult[] = [];
+    
+    for (let i = 1; i < csvData.length; i++) {
+      const result = get().validateRow(i);
+      rowResults.push(result);
+    }
+    
+    const draft: ImportDraft = {
+      id: draftId,
+      fileName,
+      originalHeaders,
+      targetHeaders,
+      headerMapping,
+      csvData,
+      rowResults,
+      filters: {
+        showValid: true,
+        showWarning: true,
+        showError: true,
+        searchKeyword: '',
+      },
+      conflictResolutions: {},
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    
+    storage.setImportDraft(draft);
+    set({ currentImportDraft: draft });
+    return draft;
+  },
+
+  updateImportDraft: (draftUpdate) => {
+    const state = get();
+    if (!state.currentImportDraft) return;
+    
+    const updatedDraft: ImportDraft = {
+      ...state.currentImportDraft,
+      ...draftUpdate,
+      updatedAt: new Date().toISOString(),
+    };
+    
+    storage.setImportDraft(updatedDraft);
+    set({ currentImportDraft: updatedDraft });
+  },
+
+  clearImportDraft: () => {
+    storage.setImportDraft(null);
+    set({ currentImportDraft: null });
+  },
+
+  validateRow: (rowIndex, correctedData) => {
+    const state = get();
+    if (!state.currentImportDraft) {
+      return {
+        rowIndex,
+        status: 'error' as const,
+        errors: [{ row: rowIndex, field: '', type: 'OTHER' as ImportErrorType, message: '没有导入草稿', originalData: {} }],
+        originalData: {},
+      };
+    }
+    
+    const csvData = state.currentImportDraft.csvData;
+    const headerMapping = state.currentImportDraft.headerMapping;
+    const row = csvData[rowIndex];
+    
+    const getMappedValue = (fieldName: string): string => {
+      const targetIndex = state.currentImportDraft!.targetHeaders.indexOf(fieldName);
+      if (targetIndex === -1) return '';
+      
+      for (const [origIdx, tgtIdx] of Object.entries(headerMapping)) {
+        if (tgtIdx === targetIndex) {
+          return row[parseInt(origIdx)]?.trim() || '';
+        }
+      }
+      return '';
+    };
+    
+    const dataToValidate = correctedData || {
+      '门店名称': getMappedValue('门店名称'),
+      '设备类型': getMappedValue('设备类型'),
+      '故障描述': getMappedValue('故障描述'),
+      '状态': getMappedValue('状态') || '待派工',
+      '联系人': getMappedValue('联系人'),
+      '联系电话': getMappedValue('联系电话'),
+      '期望上门时间': getMappedValue('期望上门时间'),
+      '工单号': getMappedValue('工单号'),
+      '工程师': getMappedValue('工程师'),
+    };
+    
+    const errors: ImportError[] = [];
+    const autoFixed: string[] = [];
+    
+    const storeName = dataToValidate['门店名称'];
+    const equipment = dataToValidate['设备类型'];
+    const description = dataToValidate['故障描述'];
+    const status = dataToValidate['状态'];
+    const contactName = dataToValidate['联系人'];
+    const contactPhone = dataToValidate['联系电话'];
+    const expectedVisitTime = dataToValidate['期望上门时间'];
+    const orderNo = dataToValidate['工单号'];
+    const engineerName = dataToValidate['工程师'];
+    
+    if (!storeName) {
+      errors.push({ row: rowIndex, field: '门店名称', type: 'MISSING_STORE', message: '门店名称不能为空', originalData: dataToValidate });
+    } else {
+      const store = state.stores.find(s => s.name === storeName);
+      if (!store) {
+        errors.push({ row: rowIndex, field: '门店名称', type: 'INVALID_STORE', message: `门店"${storeName}"不存在`, originalData: dataToValidate });
+      }
+    }
+    
+    if (!equipment) {
+      errors.push({ row: rowIndex, field: '设备类型', type: 'MISSING_EQUIPMENT', message: '设备类型不能为空', originalData: dataToValidate });
+    }
+    
+    if (!description) {
+      errors.push({ row: rowIndex, field: '故障描述', type: 'MISSING_DESCRIPTION', message: '故障描述不能为空', originalData: dataToValidate });
+    }
+    
+    if (!contactName) {
+      errors.push({ row: rowIndex, field: '联系人', type: 'MISSING_CONTACT', message: '联系人不能为空', originalData: dataToValidate });
+    }
+    
+    if (!expectedVisitTime) {
+      errors.push({ row: rowIndex, field: '期望上门时间', type: 'MISSING_VISIT_TIME', message: '期望上门时间不能为空', originalData: dataToValidate });
+    } else {
+      const dateRegex = /^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}(:\d{2})?)?$/;
+      if (!dateRegex.test(expectedVisitTime)) {
+        errors.push({ row: rowIndex, field: '期望上门时间', type: 'INVALID_DATE_FORMAT', message: `期望上门时间格式不正确，应为"YYYY-MM-DD"或"YYYY-MM-DD HH:mm"`, originalData: dataToValidate });
+      }
+    }
+    
+    const validStatuses = ['待派工', '已派工', '维修中', '待回访', '已完成', '已撤销'];
+    if (status && !validStatuses.includes(status)) {
+      errors.push({ row: rowIndex, field: '状态', type: 'INVALID_STATUS', message: `状态"${status}"无效，可选值: ${validStatuses.join('、')}`, originalData: dataToValidate });
+    }
+    
+    let validationStatus: 'pending' | 'valid' | 'warning' | 'error' = 'valid';
+    if (errors.some(e => ['MISSING_STORE', 'MISSING_EQUIPMENT', 'MISSING_DESCRIPTION', 'INVALID_STORE'].includes(e.type))) {
+      validationStatus = 'error';
+    } else if (errors.length > 0 || !orderNo) {
+      validationStatus = 'warning';
+    }
+    
+    return {
+      rowIndex,
+      status: validationStatus,
+      errors,
+      originalData: dataToValidate,
+      correctedData: correctedData ? dataToValidate : undefined,
+      autoFixed: autoFixed.length > 0 ? autoFixed : undefined,
+    };
+  },
+
+  validateAllRows: () => {
+    const state = get();
+    if (!state.currentImportDraft) return;
+    
+    const newRowResults: RowValidationResult[] = [];
+    for (let i = 1; i < state.currentImportDraft.csvData.length; i++) {
+      const result = get().validateRow(i);
+      newRowResults.push(result);
+    }
+    
+    get().updateImportDraft({ rowResults: newRowResults });
+  },
+
+  correctRow: (rowIndex, corrections) => {
+    const state = get();
+    if (!state.currentImportDraft) return;
+    
+    const rowResults = [...state.currentImportDraft.rowResults];
+    const rowResultIndex = rowIndex - 1;
+    
+    if (rowResultIndex >= 0 && rowResultIndex < rowResults.length) {
+      const currentResult = rowResults[rowResultIndex];
+      const correctedData = { ...currentResult.originalData, ...corrections };
+      const newResult = get().validateRow(rowIndex, correctedData);
+      rowResults[rowResultIndex] = newResult;
+      
+      get().updateImportDraft({ rowResults });
+    }
+  },
+
+  setConflictResolution: (rowIndex, resolution) => {
+    const state = get();
+    if (!state.currentImportDraft) return;
+    
+    const conflictResolutions = { ...state.currentImportDraft.conflictResolutions, [rowIndex]: resolution };
+    get().updateImportDraft({ conflictResolutions });
+  },
+
+  importPartialOrders: (rowsToImport, rowsToSkip) => {
+    const state = get();
+    
+    if (state.currentRole !== 'dispatch') {
+      return { success: false, error: '权限不足：只有调度角色才能执行批量导入' };
+    }
+    
+    if (!state.currentImportDraft) {
+      return { success: false, error: '没有导入草稿' };
+    }
+    
+    const now = new Date().toISOString();
+    const newOrders: WorkOrder[] = [];
+    const importedOrderNos: string[] = [];
+    const skippedOrderNos: string[] = [];
+    const allErrors: ImportError[] = [];
+    
+    const generatedOrderNos = new Set<string>();
+    const allOrderNos = new Set(state.workOrders.map(o => o.orderNo));
+    
+    for (const rowIndex of rowsToImport) {
+      const rowResultIndex = rowIndex - 1;
+      const rowResult = state.currentImportDraft.rowResults[rowResultIndex];
+      
+      if (!rowResult || rowResult.status === 'error') {
+        allErrors.push(...rowResult?.errors || []);
+        skippedOrderNos.push(`行${rowIndex}`);
+        continue;
+      }
+      
+      const csvData = state.currentImportDraft.csvData;
+      const headerMapping = state.currentImportDraft.headerMapping;
+      const row = csvData[rowIndex];
+      
+      const getMappedValue = (fieldName: string): string => {
+        const targetIndex = state.currentImportDraft!.targetHeaders.indexOf(fieldName);
+        if (targetIndex === -1) return '';
+        
+        for (const [origIdx, tgtIdx] of Object.entries(headerMapping)) {
+          if (tgtIdx === targetIndex) {
+            return row[parseInt(origIdx)]?.trim() || '';
+          }
+        }
+        return '';
+      };
+      
+      const data = rowResult.correctedData || rowResult.originalData;
+      const storeName = data['门店名称'];
+      const equipment = data['设备类型'];
+      const description = data['故障描述'];
+      const status = (data['状态'] || '待派工') as WorkOrderStatus;
+      const contactName = data['联系人'];
+      const contactPhone = data['联系电话'];
+      const expectedVisitTime = data['期望上门时间'];
+      const orderNo = data['工单号'];
+      const engineerName = data['工程师'];
+      
+      const store = state.stores.find(s => s.name === storeName);
+      
+      let finalOrderNo = orderNo;
+      if (!finalOrderNo) {
+        const year = new Date().getFullYear();
+        let count = state.workOrders.length + generatedOrderNos.size + 1;
+        finalOrderNo = `WO-${year}-${String(count).padStart(4, '0')}`;
+        
+        while (allOrderNos.has(finalOrderNo) || generatedOrderNos.has(finalOrderNo)) {
+          count++;
+          finalOrderNo = `WO-${year}-${String(count).padStart(4, '0')}`;
+        }
+        generatedOrderNos.add(finalOrderNo);
+      }
+      
+      let engineerId: string | null = null;
+      let resolvedEngineerName: string | null = null;
+      
+      if (engineerName) {
+        const engineer = state.engineers.find(e => e.name === engineerName);
+        if (engineer) {
+          engineerId = engineer.id;
+          resolvedEngineerName = engineer.name;
+        }
+      }
+      
+      const existingOrder = state.workOrders.find(o => o.orderNo === finalOrderNo);
+      const conflictResolution = state.currentImportDraft.conflictResolutions[rowIndex];
+      
+      if (existingOrder && conflictResolution === 'skip') {
+        skippedOrderNos.push(finalOrderNo);
+        continue;
+      }
+      
+      const newOrder: WorkOrder = {
+        id: existingOrder?.id || generateId(),
+        orderNo: finalOrderNo,
+        storeId: store?.id || '',
+        equipment,
+        description,
+        status: existingOrder && conflictResolution === 'overwrite' ? existingOrder.status : status,
+        engineerId: existingOrder?.engineerId || engineerId,
+        engineerName: existingOrder?.engineerName || resolvedEngineerName,
+        repairRecord: existingOrder?.repairRecord || null,
+        reviewRemark: existingOrder?.reviewRemark || null,
+        reviewRating: existingOrder?.reviewRating || null,
+        contactName,
+        contactPhone,
+        expectedVisitTime,
+        createdAt: existingOrder?.createdAt || now,
+        updatedAt: now,
+        version: (existingOrder?.version || 0) + 1,
+      };
+      
+      newOrders.push(newOrder);
+      importedOrderNos.push(finalOrderNo);
+    }
+    
+    for (const rowIndex of rowsToSkip) {
+      const csvData = state.currentImportDraft.csvData;
+      const row = csvData[rowIndex];
+      const headerMapping = state.currentImportDraft.headerMapping;
+      
+      const getMappedValue = (fieldName: string): string => {
+        const targetIndex = state.currentImportDraft!.targetHeaders.indexOf(fieldName);
+        if (targetIndex === -1) return '';
+        
+        for (const [origIdx, tgtIdx] of Object.entries(headerMapping)) {
+          if (tgtIdx === targetIndex) {
+            return row[parseInt(origIdx)]?.trim() || '';
+          }
+        }
+        return '';
+      };
+      
+      const orderNo = getMappedValue('工单号');
+      if (orderNo) {
+        skippedOrderNos.push(orderNo);
+      }
+    }
+    
+    const updatedWorkOrders = state.workOrders.filter(
+      o => !newOrders.some(n => n.orderNo === o.orderNo)
+    ).concat(newOrders);
+    
+    let updatedTimelines = { ...state.timelineMap };
+    newOrders.forEach(order => {
+      const existingOrder = state.workOrders.find(o => o.orderNo === order.orderNo);
+      const store = state.stores.find(s => s.id === order.storeId);
+      
+      if (!existingOrder) {
+        updatedTimelines = addTimeline(
+          updatedTimelines,
+          order.id,
+          '创建工单',
+          `批量导入: ${store?.name || '门店'}提交报修: ${order.equipment} - ${order.description}`,
+          'dispatch'
+        );
+      } else {
+        updatedTimelines = addTimeline(
+          updatedTimelines,
+          order.id,
+          '创建工单',
+          `批量导入更新: ${order.equipment} - ${order.description}`,
+          'dispatch'
+        );
+      }
+    });
+    
+    const importResult: PartialImportResult = {
+      successCount: newOrders.length,
+      skippedCount: skippedOrderNos.length,
+      failureCount: allErrors.length,
+      totalRows: rowsToImport.length + rowsToSkip.length,
+      importedOrderNos,
+      skippedOrderNos,
+      errors: allErrors,
+    };
+    
+    storage.setWorkOrders(updatedWorkOrders);
+    storage.setTimelines(updatedTimelines);
+    
+    get().clearImportDraft();
+    
+    set({ 
+      workOrders: updatedWorkOrders, 
+      timelineMap: updatedTimelines,
+    });
+    
+    return { success: true, result: importResult };
   },
 }));

@@ -114,6 +114,46 @@ export interface ImportResult {
   operator: string;
 }
 
+export type RowValidationStatus = 'pending' | 'valid' | 'warning' | 'error';
+
+export interface RowValidationResult {
+  rowIndex: number;
+  status: RowValidationStatus;
+  errors: ImportError[];
+  originalData: Record<string, string>;
+  correctedData?: Record<string, string>;
+  autoFixed?: string[];
+}
+
+export interface ImportDraft {
+  id: string;
+  fileName: string;
+  originalHeaders: string[];
+  targetHeaders: string[];
+  headerMapping: Record<number, number>;
+  csvData: string[][];
+  rowResults: RowValidationResult[];
+  filters: {
+    showValid: boolean;
+    showWarning: boolean;
+    showError: boolean;
+    searchKeyword: string;
+  };
+  conflictResolutions: Record<number, 'skip' | 'overwrite' | 'new'>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PartialImportResult {
+  successCount: number;
+  skippedCount: number;
+  failureCount: number;
+  totalRows: number;
+  importedOrderNos: string[];
+  skippedOrderNos: string[];
+  errors: ImportError[];
+}
+
 export interface AppState {
   currentRole: Role;
   workOrders: WorkOrder[];
@@ -124,4 +164,5 @@ export interface AppState {
   exports: ExportResult[];
   imports: ImportResult[];
   selectedOrderId: string | null;
+  currentImportDraft: ImportDraft | null;
 }
