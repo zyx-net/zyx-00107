@@ -524,6 +524,128 @@ describe('门店报修派工工作台 - 回归测试', () => {
       const afterSecondImport = useStore.getState().imports.length;
       expect(afterSecondImport).toBe(2);
     });
+
+    it('缺少期望上门时间应该在预检阶段拦截', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      const store = useStore.getState();
+      const initialCount = store.workOrders.length;
+      
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '', ''],
+      ];
+      
+      const result = store.importOrders(csvData);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('阻断性错误');
+      
+      const { errors } = store.validateImportData(csvData);
+      const visitTimeError = errors.find(e => e.type === 'MISSING_VISIT_TIME');
+      expect(visitTimeError).toBeDefined();
+      expect(visitTimeError?.field).toBe('期望上门时间');
+      
+      const afterImport = useStore.getState().workOrders.length;
+      expect(afterImport).toBe(initialCount);
+    });
+
+    it('状态值不在允许范围内应该在预检阶段拦截', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      const store = useStore.getState();
+      const initialCount = store.workOrders.length;
+      
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '无效状态', '张三', '13800000000', '2024-01-20', ''],
+      ];
+      
+      const result = store.importOrders(csvData);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('阻断性错误');
+      
+      const { errors } = store.validateImportData(csvData);
+      const statusError = errors.find(e => e.type === 'INVALID_STATUS');
+      expect(statusError).toBeDefined();
+      expect(statusError?.field).toBe('状态');
+      expect(statusError?.message).toContain('无效状态');
+      
+      const afterImport = useStore.getState().workOrders.length;
+      expect(afterImport).toBe(initialCount);
+    });
+
+    it('多行空工单号应该生成不同编号', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      const store = useStore.getState();
+      const initialCount = store.workOrders.length;
+      
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调1', '不制冷1', '待派工', '张三', '13800000000', '2024-01-20', ''],
+        ['海淀店', '空调2', '不制冷2', '待派工', '李四', '13800000001', '2024-01-21', ''],
+        ['浦东店', '空调3', '不制冷3', '待派工', '王五', '13800000002', '2024-01-22', ''],
+      ];
+      
+      const result = store.importOrders(csvData);
+      expect(result.success).toBe(true);
+      expect(result.result!.successCount).toBe(3);
+      
+      const updatedStore = useStore.getState();
+      expect(updatedStore.workOrders.length).toBe(initialCount + 3);
+      
+      const newOrders = updatedStore.workOrders.filter(o => 
+        o.description === '不制冷1' || o.description === '不制冷2' || o.description === '不制冷3'
+      );
+      expect(newOrders.length).toBe(3);
+      
+      const orderNos = newOrders.map(o => o.orderNo);
+      const uniqueOrderNos = new Set(orderNos);
+      expect(uniqueOrderNos.size).toBe(3);
+      
+      orderNos.forEach(orderNo => {
+        expect(orderNo).toMatch(/^WO-\d{4}-\d{4}$/);
+      });
+    });
+
+    it('合法导入后工单列表和详情应该正确', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      const store = useStore.getState();
+      const initialCount = store.workOrders.length;
+      
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '测试设备', '测试故障描述', '待派工', '测试联系人', '13900000000', '2024-02-15', ''],
+      ];
+      
+      const result = store.importOrders(csvData);
+      expect(result.success).toBe(true);
+      
+      const updatedStore = useStore.getState();
+      expect(updatedStore.workOrders.length).toBe(initialCount + 1);
+      
+      const newOrder = updatedStore.workOrders.find(o => o.description === '测试故障描述');
+      expect(newOrder).toBeDefined();
+      expect(newOrder?.equipment).toBe('测试设备');
+      expect(newOrder?.contactName).toBe('测试联系人');
+      expect(newOrder?.contactPhone).toBe('13900000000');
+      expect(newOrder?.expectedVisitTime).toBe('2024-02-15');
+      expect(newOrder?.status).toBe('待派工');
+      expect(newOrder?.storeId).toBe('STORE001');
+      
+      const timeline = updatedStore.timelineMap[newOrder!.id];
+      expect(timeline).toBeDefined();
+      expect(timeline!.length).toBeGreaterThan(0);
+    });
   });
 
   describe('导出功能', () => {

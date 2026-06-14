@@ -633,6 +633,9 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     });
 
     if (errors.length === 0) {
+      const generatedOrderNos = new Set<string>();
+      const allOrderNos = new Set(state.workOrders.map(o => o.orderNo));
+      
       csvData.forEach((row, index) => {
         if (index === 0) return;
         
@@ -647,6 +650,20 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
 
         const store = state.stores.find(s => s.name === storeName);
         
+        let finalOrderNo = orderNo;
+        if (!finalOrderNo) {
+          const year = new Date().getFullYear();
+          let count = state.workOrders.length + generatedOrderNos.size + 1;
+          finalOrderNo = `WO-${year}-${String(count).padStart(4, '0')}`;
+          
+          while (allOrderNos.has(finalOrderNo) || generatedOrderNos.has(finalOrderNo)) {
+            count++;
+            finalOrderNo = `WO-${year}-${String(count).padStart(4, '0')}`;
+          }
+          generatedOrderNos.add(finalOrderNo);
+          allOrderNos.add(finalOrderNo);
+        }
+        
         validOrders.push({
           storeId: store?.id || '',
           equipment,
@@ -655,7 +672,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
           contactName,
           contactPhone,
           expectedVisitTime,
-          orderNo: orderNo || generateOrderNo(state.workOrders),
+          orderNo: finalOrderNo,
         });
       });
     }
@@ -681,8 +698,10 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       e.type === 'MISSING_EQUIPMENT' || 
       e.type === 'MISSING_DESCRIPTION' ||
       e.type === 'MISSING_CONTACT' ||
+      e.type === 'MISSING_VISIT_TIME' ||
       e.type === 'INVALID_STORE' ||
       e.type === 'INVALID_DATE_FORMAT' ||
+      e.type === 'INVALID_STATUS' ||
       e.type === 'DUPLICATE_ORDER_NO'
     );
 
