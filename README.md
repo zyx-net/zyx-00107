@@ -256,7 +256,7 @@ src/
 ├── utils/               # 工具函数
 │   └── storage.ts             # localStorage 工具
 ├── __tests__/           # 测试文件
-│   └── regression.test.tsx    # 回归测试
+│   └── regression.test.ts    # 回归测试
 ├── pages/               # 页面
 │   └── Home.tsx
 ├── App.tsx
