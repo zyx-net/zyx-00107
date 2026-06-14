@@ -17,10 +17,13 @@ import {
   XCircle,
   RotateCcw,
   AlertTriangle,
-  Check
+  Check,
+  RefreshCcw
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useState } from 'react';
+
+type ActionMode = 'none' | 'cancel' | 'reopen';
 
 export function WorkOrderDetail() {
   const { 
@@ -32,9 +35,11 @@ export function WorkOrderDetail() {
     selectOrder,
     acceptOrder,
     cancelOrder,
+    reopenOrder,
   } = useStore();
 
-  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [actionMode, setActionMode] = useState<ActionMode>('none');
+  const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   if (!selectedOrderId) {
@@ -68,19 +73,40 @@ export function WorkOrderDetail() {
   };
 
   const handleCancel = () => {
-    const result = cancelOrder(order.id);
+    if (!reason.trim()) {
+      setError('请填写撤销原因');
+      return;
+    }
+    const result = cancelOrder(order.id, reason);
     if (!result.success) {
       setError(result.error || '撤销失败');
+    } else {
+      setActionMode('none');
+      setReason('');
     }
-    setShowCancelConfirm(false);
   };
 
-  const canDispatch = currentRole === 'dispatch' && order.status === '待派工';
+  const handleReopen = () => {
+    if (!reason.trim()) {
+      setError('请填写重开原因');
+      return;
+    }
+    const result = reopenOrder(order.id, reason);
+    if (!result.success) {
+      setError(result.error || '重开失败');
+    } else {
+      setActionMode('none');
+      setReason('');
+    }
+  };
+
+  const canDispatch = order.status === '待派工';
   const canAccept = currentRole === 'engineer' && order.status === '已派工';
   const canReview = currentRole === 'quality' && order.status === '待回访';
   const canCancel = 
-    (currentRole === 'store' && (order.status === '待派工' || order.status === '已派工')) ||
+    (currentRole === 'store' && (order.status === '待派工' || order.status === '已派工' || order.status === '维修中')) ||
     (currentRole === 'engineer' && order.status === '已派工');
+  const canReopen = currentRole === 'store' && order.status === '已撤销';
   const canRepair = currentRole === 'engineer' && (order.status === '维修中' || order.status === '已派工');
 
   return (
@@ -210,7 +236,7 @@ export function WorkOrderDetail() {
           </div>
         )}
 
-        {canDispatch && <DispatchPanel orderId={order.id} />}
+        {canDispatch && <DispatchPanel orderId={order.id} orderVersion={order.version} />}
         
         {canRepair && (
           <RepairForm 
@@ -228,43 +254,95 @@ export function WorkOrderDetail() {
         </div>
       </div>
 
-      <div className="p-5 border-t border-slate-700/50 flex items-center gap-3 bg-gradient-to-r from-slate-800/40 to-slate-800/80">
-        {canAccept && (
-          <button
-            onClick={handleAccept}
-            className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-medium transition-all duration-200 hover:shadow-lg hover:shadow-emerald-500/20 flex items-center justify-center gap-2"
-          >
-            <CheckCircle className="w-5 h-5" />
-            接单
-          </button>
-        )}
-        
-        {canCancel && !showCancelConfirm && (
-          <button
-            onClick={() => setShowCancelConfirm(true)}
-            className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2"
-          >
-            <XCircle className="w-5 h-5" />
-            撤销工单
-          </button>
+      <div className="p-5 border-t border-slate-700/50 bg-gradient-to-r from-slate-800/40 to-slate-800/80">
+        {actionMode === 'none' && (
+          <div className="flex items-center gap-3">
+            {canAccept && (
+              <button
+                onClick={handleAccept}
+                className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-medium transition-all duration-200 hover:shadow-lg hover:shadow-emerald-500/20 flex items-center justify-center gap-2"
+              >
+                <CheckCircle className="w-5 h-5" />
+                接单
+              </button>
+            )}
+            
+            {canCancel && (
+              <button
+                onClick={() => setActionMode('cancel')}
+                className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2"
+              >
+                <XCircle className="w-5 h-5" />
+                撤销工单
+              </button>
+            )}
+
+            {canReopen && (
+              <button
+                onClick={() => setActionMode('reopen')}
+                className="flex-1 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2"
+              >
+                <RefreshCcw className="w-5 h-5" />
+                重开工单
+              </button>
+            )}
+          </div>
         )}
 
-        {showCancelConfirm && (
-          <>
-            <button
-              onClick={handleCancel}
-              className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2"
-            >
-              <Check className="w-5 h-5" />
-              确认撤销
-            </button>
-            <button
-              onClick={() => setShowCancelConfirm(false)}
-              className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl font-medium transition-all duration-200"
-            >
-              取消
-            </button>
-          </>
+        {actionMode === 'cancel' && (
+          <div className="space-y-3">
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="请输入撤销原因（必填）"
+              className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-xl text-slate-200 placeholder-slate-500 focus:outline-none focus:border-red-500/50 focus:ring-1 focus:ring-red-500/20 transition-all"
+              autoFocus
+            />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleCancel}
+                className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2"
+              >
+                <Check className="w-5 h-5" />
+                确认撤销
+              </button>
+              <button
+                onClick={() => { setActionMode('none'); setReason(''); setError(null); }}
+                className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl font-medium transition-all duration-200"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        )}
+
+        {actionMode === 'reopen' && (
+          <div className="space-y-3">
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="请输入重开原因（必填）"
+              className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-xl text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all"
+              autoFocus
+            />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleReopen}
+                className="flex-1 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2"
+              >
+                <RefreshCcw className="w-5 h-5" />
+                确认重开
+              </button>
+              <button
+                onClick={() => { setActionMode('none'); setReason(''); setError(null); }}
+                className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-xl font-medium transition-all duration-200"
+              >
+                取消
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>

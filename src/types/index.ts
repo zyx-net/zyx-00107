@@ -17,7 +17,8 @@ export type TimelineAction =
   | '退回'
   | '回访通过'
   | '回访不通过'
-  | '撤销';
+  | '撤销'
+  | '重开';
 
 export interface Store {
   id: string;

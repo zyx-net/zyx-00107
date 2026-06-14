@@ -22,12 +22,13 @@ interface AppActions {
   setRole: (role: Role) => void;
   setFilters: (filters: Partial<FilterState>) => void;
   selectOrder: (orderId: string | null) => void;
-  dispatchOrder: (orderId: string, engineerId: string, engineerName: string) => { success: boolean; error?: string };
+  dispatchOrder: (orderId: string, engineerId: string, engineerName: string, expectedVersion: number) => { success: boolean; error?: string };
   acceptOrder: (orderId: string) => { success: boolean; error?: string };
   updateRepairRecord: (orderId: string, record: string) => void;
   submitComplete: (orderId: string) => { success: boolean; error?: string };
   reviewOrder: (orderId: string, rating: '满意' | '基本满意' | '不满意', remark: string) => { success: boolean; error?: string };
-  cancelOrder: (orderId: string) => { success: boolean; error?: string };
+  cancelOrder: (orderId: string, reason: string) => { success: boolean; error?: string };
+  reopenOrder: (orderId: string, reason: string) => { success: boolean; error?: string };
   createOrder: (storeId: string, equipment: string, description: string) => WorkOrder;
   exportOrders: (orders: WorkOrder[], name: string) => ExportResult;
   getFilteredOrders: () => WorkOrder[];
@@ -90,7 +91,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     set({ selectedOrderId: orderId });
   },
 
-  dispatchOrder: (orderId, engineerId, engineerName) => {
+  dispatchOrder: (orderId, engineerId, engineerName, expectedVersion) => {
     const state = get();
     const order = state.workOrders.find(o => o.id === orderId);
     
@@ -99,7 +100,11 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     }
 
     if (order.status !== '待派工') {
-      return { success: false, error: `该工单已被其他调度派工，当前状态: ${order.status}` };
+      return { success: false, error: `派工失败：该工单已被其他调度派工，当前状态: ${order.status}` };
+    }
+
+    if (order.version !== expectedVersion) {
+      return { success: false, error: `派工失败：工单已被其他操作修改，请刷新后重试（版本冲突）` };
     }
 
     const updatedOrders = state.workOrders.map(o => 
@@ -280,7 +285,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     return { success: true };
   },
 
-  cancelOrder: (orderId) => {
+  cancelOrder: (orderId, reason) => {
     const state = get();
     const order = state.workOrders.find(o => o.id === orderId);
 
@@ -311,7 +316,54 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       state.timelineMap,
       orderId,
       '撤销',
-      '工单已撤销',
+      `撤销原因: ${reason || '未说明'}`,
+      state.currentRole
+    );
+
+    storage.setWorkOrders(updatedOrders);
+    storage.setTimelines(updatedTimelines);
+
+    set({ workOrders: updatedOrders, timelineMap: updatedTimelines });
+    return { success: true };
+  },
+
+  reopenOrder: (orderId, reason) => {
+    const state = get();
+    const order = state.workOrders.find(o => o.id === orderId);
+
+    if (!order) {
+      return { success: false, error: '工单不存在' };
+    }
+
+    if (order.status !== '已撤销') {
+      return { success: false, error: '只有已撤销的工单才能重开' };
+    }
+
+    if (!reason || reason.trim().length === 0) {
+      return { success: false, error: '重开工单必须填写原因' };
+    }
+
+    const updatedOrders = state.workOrders.map(o =>
+      o.id === orderId
+        ? {
+            ...o,
+            status: '待派工' as WorkOrderStatus,
+            engineerId: null,
+            engineerName: null,
+            repairRecord: null,
+            reviewRemark: null,
+            reviewRating: null,
+            updatedAt: new Date().toISOString(),
+            version: o.version + 1
+          }
+        : o
+    );
+
+    const updatedTimelines = addTimeline(
+      state.timelineMap,
+      orderId,
+      '重开',
+      `重开原因: ${reason}`,
       state.currentRole
     );
 
@@ -411,9 +463,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     
     switch (currentRole) {
       case 'store':
-        return workOrders.filter(o => 
-          o.status !== '已撤销' && o.status !== '已完成'
-        );
+        return workOrders;
       case 'dispatch':
         return workOrders.filter(o => o.status === '待派工');
       case 'engineer':

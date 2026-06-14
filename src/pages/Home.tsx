@@ -5,23 +5,71 @@ import { WorkOrderList } from "../components/WorkOrderList";
 import { WorkOrderDetail } from "../components/WorkOrderDetail";
 import { useStore } from "../store/useStore";
 import { Settings, Download, RotateCcw } from "lucide-react";
+import { format } from 'date-fns';
+import { zhCN } from 'date-fns/locale';
 
 export default function Home() {
-  const { selectedOrderId, resetData, exports, getFilteredOrders, exportOrders } = useStore();
+  const { resetData, getFilteredOrders, stores, exportOrders } = useStore();
 
   const handleExport = () => {
     const orders = getFilteredOrders();
-    const timestamp = new Date().toLocaleString('zh-CN');
+    const timestamp = new Date().toLocaleString('zh-CN').replace(/[/:]/g, '-');
     const name = `工单导出_${timestamp}`;
-    const result = exportOrders(orders, name);
     
-    const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+    const headers = [
+      '工单号',
+      '门店',
+      '设备类型',
+      '故障描述',
+      '状态',
+      '工程师',
+      '维修记录',
+      '回访评价',
+      '回访备注',
+      '创建时间',
+      '更新时间'
+    ];
+
+    const escapeCsvField = (field: string | null | undefined): string => {
+      if (field === null || field === undefined) return '';
+      const str = String(field);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const rows = orders.map(order => {
+      const store = stores.find(s => s.id === order.storeId);
+      return [
+        escapeCsvField(order.orderNo),
+        escapeCsvField(store?.name || ''),
+        escapeCsvField(order.equipment),
+        escapeCsvField(order.description),
+        escapeCsvField(order.status),
+        escapeCsvField(order.engineerName || ''),
+        escapeCsvField(order.repairRecord || ''),
+        escapeCsvField(order.reviewRating || ''),
+        escapeCsvField(order.reviewRemark || ''),
+        escapeCsvField(format(new Date(order.createdAt), 'yyyy-MM-dd HH:mm:ss', { locale: zhCN })),
+        escapeCsvField(format(new Date(order.updatedAt), 'yyyy-MM-dd HH:mm:ss', { locale: zhCN })),
+      ].join(',');
+    });
+
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    
+    const BOM = '\uFEFF';
+    const blob = new Blob([BOM + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${name}.json`;
+    a.download = `${name}.csv`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
+
+    exportOrders(orders, name);
   };
 
   return (
@@ -47,7 +95,7 @@ export default function Home() {
                 className="flex items-center gap-2 px-4 py-2 bg-slate-800/50 hover:bg-slate-700/50 text-slate-300 rounded-xl font-medium transition-all duration-200 border border-slate-700/50 hover:border-slate-600/50"
               >
                 <Download className="w-4 h-4" />
-                导出
+                导出CSV
               </button>
               <button
                 onClick={resetData}

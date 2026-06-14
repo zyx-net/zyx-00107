@@ -1,21 +1,39 @@
 import { useState } from 'react';
 import { useStore } from '../store/useStore';
-import { Engineer } from '../types';
-import { UserPlus, Check, AlertCircle } from 'lucide-react';
+import { UserPlus, Check, AlertCircle, ShieldOff } from 'lucide-react';
 import { clsx } from 'clsx';
 
 interface DispatchPanelProps {
   orderId: string;
+  orderVersion: number;
   onSuccess?: () => void;
 }
 
-export function DispatchPanel({ orderId, onSuccess }: DispatchPanelProps) {
-  const { engineers, dispatchOrder } = useStore();
+export function DispatchPanel({ orderId, orderVersion, onSuccess }: DispatchPanelProps) {
+  const { currentRole, engineers, dispatchOrder } = useStore();
   const [selectedEngineer, setSelectedEngineer] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const availableEngineers = engineers.filter(e => e.status !== 'offline');
+
+  if (currentRole !== 'dispatch') {
+    return (
+      <div className="bg-slate-800/50 rounded-2xl p-5 border border-slate-700/50">
+        <h3 className="text-lg font-semibold text-slate-200 mb-4 flex items-center gap-2">
+          <UserPlus className="w-5 h-5 text-orange-400" />
+          派工
+        </h3>
+        <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-start gap-3 text-red-400">
+          <ShieldOff className="w-5 h-5 flex-shrink-0 mt-0.5" />
+          <div>
+            <div className="font-medium">权限不足</div>
+            <div className="text-sm mt-1">只有调度角色才能进行派工操作</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const handleDispatch = async () => {
     if (!selectedEngineer) {
@@ -29,7 +47,7 @@ export function DispatchPanel({ orderId, onSuccess }: DispatchPanelProps) {
     setLoading(true);
     setError(null);
 
-    const result = dispatchOrder(orderId, selectedEngineer, engineer.name);
+    const result = dispatchOrder(orderId, selectedEngineer, engineer.name, orderVersion);
     
     setLoading(false);
 

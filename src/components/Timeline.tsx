@@ -11,7 +11,8 @@ import {
   RotateCcw, 
   ThumbsUp, 
   ThumbsDown,
-  XCircle
+  XCircle,
+  RefreshCcw
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -29,6 +30,7 @@ const actionIcons: Record<string, React.ReactNode> = {
   '回访通过': <ThumbsUp className="w-4 h-4" />,
   '回访不通过': <ThumbsDown className="w-4 h-4" />,
   '撤销': <XCircle className="w-4 h-4" />,
+  '重开': <RefreshCcw className="w-4 h-4" />,
 };
 
 const actionColors: Record<string, string> = {
@@ -41,6 +43,7 @@ const actionColors: Record<string, string> = {
   '回访通过': '#10b981',
   '回访不通过': '#f59e0b',
   '撤销': '#6b7280',
+  '重开': '#3b82f6',
 };
 
 export function Timeline({ items }: TimelineProps) {
