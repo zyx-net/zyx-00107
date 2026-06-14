@@ -3,13 +3,87 @@ import { StatisticsCards } from "../components/StatisticsCards";
 import { FilterPanel } from "../components/FilterPanel";
 import { WorkOrderList } from "../components/WorkOrderList";
 import { WorkOrderDetail } from "../components/WorkOrderDetail";
+import { ImportPreviewModal } from "../components/ImportPreviewModal";
+import { ImportHistory } from "../components/ImportHistory";
 import { useStore } from "../store/useStore";
-import { Settings, Download, RotateCcw } from "lucide-react";
+import { Settings, Download, RotateCcw, Upload, Lock } from "lucide-react";
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import { useState, useRef } from "react";
+import { clsx } from "clsx";
 
 export default function Home() {
-  const { resetData, getFilteredOrders, stores, exportOrders } = useStore();
+  const { resetData, getFilteredOrders, stores, exportOrders, currentRole } = useStore();
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFileName, setImportFileName] = useState('');
+  const [importCsvData, setImportCsvData] = useState<string[][]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const canImport = currentRole === 'dispatch';
+
+  const parseCSV = (text: string): string[][] => {
+    const lines = text.split(/\r?\n/).filter(line => line.trim());
+    return lines.map(line => {
+      const result: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          result.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current.trim());
+      return result;
+    });
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      const data = parseCSV(text);
+      
+      if (data.length < 2) {
+        alert('CSV 文件内容为空或格式不正确');
+        return;
+      }
+
+      const headers = data[0];
+      const expectedHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const hasExpectedHeaders = expectedHeaders.every(h => 
+        headers.some(header => header.includes(h) || h.includes(header))
+      );
+
+      if (!hasExpectedHeaders && headers.length < 3) {
+        alert('CSV 文件格式不正确，请确保包含：门店名称、设备类型、故障描述 等列');
+        return;
+      }
+
+      setImportFileName(file.name);
+      setImportCsvData(data);
+      setShowImportModal(true);
+    };
+    reader.readAsText(file, 'UTF-8');
+    
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   const handleExport = () => {
     const orders = getFilteredOrders();
@@ -17,11 +91,14 @@ export default function Home() {
     const name = `工单导出_${timestamp}`;
     
     const headers = [
-      '工单号',
-      '门店',
+      '门店名称',
       '设备类型',
       '故障描述',
       '状态',
+      '联系人',
+      '联系电话',
+      '期望上门时间',
+      '工单号',
       '工程师',
       '维修记录',
       '回访评价',
@@ -42,11 +119,14 @@ export default function Home() {
     const rows = orders.map(order => {
       const store = stores.find(s => s.id === order.storeId);
       return [
-        escapeCsvField(order.orderNo),
         escapeCsvField(store?.name || ''),
         escapeCsvField(order.equipment),
         escapeCsvField(order.description),
         escapeCsvField(order.status),
+        escapeCsvField(order.contactName || ''),
+        escapeCsvField(order.contactPhone || ''),
+        escapeCsvField(order.expectedVisitTime || ''),
+        escapeCsvField(order.orderNo),
         escapeCsvField(order.engineerName || ''),
         escapeCsvField(order.repairRecord || ''),
         escapeCsvField(order.reviewRating || ''),
@@ -74,6 +154,14 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv"
+        onChange={handleFileSelect}
+        className="hidden"
+      />
+      
       <div className="border-b border-slate-800/50 bg-slate-900/50 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-[1800px] mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
@@ -97,6 +185,24 @@ export default function Home() {
                 <Download className="w-4 h-4" />
                 导出CSV
               </button>
+              {canImport ? (
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-xl font-medium transition-all duration-200 border border-blue-600 hover:border-blue-500"
+                >
+                  <Upload className="w-4 h-4" />
+                  导入CSV
+                </button>
+              ) : (
+                <button
+                  disabled
+                  className="flex items-center gap-2 px-4 py-2 bg-slate-700/50 text-slate-500 rounded-xl font-medium border border-slate-700/50 cursor-not-allowed"
+                  title="只有调度角色才能导入工单"
+                >
+                  <Lock className="w-4 h-4" />
+                  导入CSV
+                </button>
+              )}
               <button
                 onClick={resetData}
                 className="flex items-center gap-2 px-4 py-2 bg-slate-800/50 hover:bg-slate-700/50 text-slate-400 rounded-xl transition-all duration-200 border border-slate-700/50 hover:border-slate-600/50"
@@ -112,6 +218,7 @@ export default function Home() {
       <div className="max-w-[1800px] mx-auto px-6 py-6">
         <StatisticsCards />
         <FilterPanel />
+        <ImportHistory />
         
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="lg:col-span-1">
@@ -122,6 +229,17 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      <ImportPreviewModal
+        isOpen={showImportModal}
+        onClose={() => {
+          setShowImportModal(false);
+          setImportCsvData([]);
+          setImportFileName('');
+        }}
+        csvData={importCsvData}
+        fileName={importFileName}
+      />
     </div>
   );
 }

@@ -165,11 +165,18 @@ export function WorkOrderDetail() {
               </div>
             </div>
             <div className="flex items-start gap-3">
-              <Phone className="w-4 h-4 text-slate-500 mt-1" />
+              <User className="w-4 h-4 text-slate-500 mt-1" />
               <div>
-                <div className="text-xs text-slate-500">联系电话</div>
-                <div className="text-slate-200 font-medium">{store?.phone || '-'}</div>
-                <div className="text-xs text-slate-500 mt-1">{store?.contact}</div>
+                <div className="text-xs text-slate-500">联系人</div>
+                <div className="text-slate-200 font-medium">{order.contactName || store?.contact || '-'}</div>
+                <div className="text-xs text-slate-500 mt-1">{order.contactPhone || store?.phone || ''}</div>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <Calendar className="w-4 h-4 text-slate-500 mt-1" />
+              <div>
+                <div className="text-xs text-slate-500">期望上门时间</div>
+                <div className="text-slate-200 font-medium">{order.expectedVisitTime || '-'}</div>
               </div>
             </div>
             <div className="flex items-start gap-3">

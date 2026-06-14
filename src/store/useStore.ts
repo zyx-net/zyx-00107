@@ -7,7 +7,10 @@ import {
   FilterState, 
   WorkOrderStatus,
   TimelineAction,
-  ExportResult 
+  ExportResult,
+  ImportResult,
+  ImportError,
+  ImportErrorType 
 } from '../types';
 import { 
   initialWorkOrders, 
@@ -29,11 +32,14 @@ interface AppActions {
   reviewOrder: (orderId: string, rating: '满意' | '基本满意' | '不满意', remark: string) => { success: boolean; error?: string };
   cancelOrder: (orderId: string, reason: string) => { success: boolean; error?: string };
   reopenOrder: (orderId: string, reason: string) => { success: boolean; error?: string };
-  createOrder: (storeId: string, equipment: string, description: string) => WorkOrder;
+  createOrder: (storeId: string, equipment: string, description: string, contactName?: string, contactPhone?: string, expectedVisitTime?: string) => WorkOrder;
   exportOrders: (orders: WorkOrder[], name: string) => ExportResult;
   getFilteredOrders: () => WorkOrder[];
   getRoleOrders: () => WorkOrder[];
   resetData: () => void;
+  importOrders: (csvData: string[][]) => { success: boolean; result?: ImportResult; error?: string };
+  validateImportData: (csvData: string[][]) => { valid: boolean; errors: ImportError[]; validOrders: Partial<WorkOrder>[] };
+  getImports: () => ImportResult[];
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 15);
@@ -74,6 +80,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
   filters: storage.getFilters(),
   timelineMap: storage.getTimelines().WO001 ? storage.getTimelines() : initialTimelines,
   exports: storage.getExports(),
+  imports: storage.getImports(),
   selectedOrderId: null,
 
   setRole: (role) => {
@@ -379,7 +386,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     return { success: true };
   },
 
-  createOrder: (storeId, equipment, description) => {
+  createOrder: (storeId, equipment, description, contactName, contactPhone, expectedVisitTime) => {
     const state = get();
     const store = state.stores.find(s => s.id === storeId);
     const newOrder: WorkOrder = {
@@ -394,6 +401,9 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       repairRecord: null,
       reviewRemark: null,
       reviewRating: null,
+      contactName: contactName || null,
+      contactPhone: contactPhone || null,
+      expectedVisitTime: expectedVisitTime || null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       version: 1,
@@ -416,14 +426,16 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
   },
 
   exportOrders: (orders, name) => {
+    const state = get();
     const exportResult: ExportResult = {
       id: generateId(),
       name,
       data: orders,
       createdAt: new Date().toISOString(),
+      filterSnapshot: { ...state.filters },
     };
 
-    const updatedExports = [...get().exports, exportResult];
+    const updatedExports = [...state.exports, exportResult];
     storage.setExports(updatedExports);
     set({ exports: updatedExports });
 
@@ -482,6 +494,289 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     }
   },
 
+  validateImportData: (csvData) => {
+    const state = get();
+    const errors: ImportError[] = [];
+    const validOrders: Partial<WorkOrder>[] = [];
+    const seenOrderNos = new Set<string>();
+    
+    const validStatuses = ['待派工', '已派工', '维修中', '待回访', '已完成', '已撤销'];
+    const validStoreIds = new Set(state.stores.map(s => s.id));
+
+    csvData.forEach((row, index) => {
+      if (index === 0) return;
+      
+      const rowNum = index + 1;
+      const storeName = row[0]?.trim() || '';
+      const equipment = row[1]?.trim() || '';
+      const description = row[2]?.trim() || '';
+      const status = row[3]?.trim() || '';
+      const contactName = row[4]?.trim() || '';
+      const contactPhone = row[5]?.trim() || '';
+      const expectedVisitTime = row[6]?.trim() || '';
+      const orderNo = row[7]?.trim() || '';
+
+      const originalData: Record<string, string> = {
+        '门店名称': storeName,
+        '设备类型': equipment,
+        '故障描述': description,
+        '状态': status,
+        '联系人': contactName,
+        '联系电话': contactPhone,
+        '期望上门时间': expectedVisitTime,
+        '工单号': orderNo,
+      };
+
+      if (!storeName) {
+        errors.push({
+          row: rowNum,
+          field: '门店名称',
+          type: 'MISSING_STORE',
+          message: '门店名称不能为空',
+          originalData,
+        });
+      } else {
+        const store = state.stores.find(s => s.name === storeName);
+        if (!store) {
+          errors.push({
+            row: rowNum,
+            field: '门店名称',
+            type: 'INVALID_STORE',
+            message: `门店"${storeName}"不存在`,
+            originalData,
+          });
+        }
+      }
+
+      if (!equipment) {
+        errors.push({
+          row: rowNum,
+          field: '设备类型',
+          type: 'MISSING_EQUIPMENT',
+          message: '设备类型不能为空',
+          originalData,
+        });
+      }
+
+      if (!description) {
+        errors.push({
+          row: rowNum,
+          field: '故障描述',
+          type: 'MISSING_DESCRIPTION',
+          message: '故障描述不能为空',
+          originalData,
+        });
+      }
+
+      if (!contactName) {
+        errors.push({
+          row: rowNum,
+          field: '联系人',
+          type: 'MISSING_CONTACT',
+          message: '联系人不能为空',
+          originalData,
+        });
+      }
+
+      if (!expectedVisitTime) {
+        errors.push({
+          row: rowNum,
+          field: '期望上门时间',
+          type: 'MISSING_VISIT_TIME',
+          message: '期望上门时间不能为空',
+          originalData,
+        });
+      } else {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}(:\d{2})?)?$/;
+        if (!dateRegex.test(expectedVisitTime)) {
+          errors.push({
+            row: rowNum,
+            field: '期望上门时间',
+            type: 'INVALID_DATE_FORMAT',
+            message: `期望上门时间格式不正确，应为"YYYY-MM-DD"或"YYYY-MM-DD HH:mm"`,
+            originalData,
+          });
+        }
+      }
+
+      if (status && !validStatuses.includes(status)) {
+        errors.push({
+          row: rowNum,
+          field: '状态',
+          type: 'INVALID_STATUS',
+          message: `状态"${status}"无效，可选值: ${validStatuses.join('、')}`,
+          originalData,
+        });
+      }
+
+      if (orderNo) {
+        if (seenOrderNos.has(orderNo)) {
+          errors.push({
+            row: rowNum,
+            field: '工单号',
+            type: 'DUPLICATE_ORDER_NO',
+            message: `工单号"${orderNo}"在CSV文件中重复`,
+            originalData,
+          });
+        } else if (state.workOrders.some(o => o.orderNo === orderNo)) {
+          errors.push({
+            row: rowNum,
+            field: '工单号',
+            type: 'ORDER_EXISTS',
+            message: `工单号"${orderNo}"已存在，导入会覆盖原工单`,
+            originalData,
+          });
+        } else {
+          seenOrderNos.add(orderNo);
+        }
+      }
+    });
+
+    if (errors.length === 0) {
+      csvData.forEach((row, index) => {
+        if (index === 0) return;
+        
+        const storeName = row[0]?.trim() || '';
+        const equipment = row[1]?.trim() || '';
+        const description = row[2]?.trim() || '';
+        const status = (row[3]?.trim() || '待派工') as WorkOrderStatus;
+        const contactName = row[4]?.trim() || '';
+        const contactPhone = row[5]?.trim() || '';
+        const expectedVisitTime = row[6]?.trim() || '';
+        const orderNo = row[7]?.trim() || '';
+
+        const store = state.stores.find(s => s.name === storeName);
+        
+        validOrders.push({
+          storeId: store?.id || '',
+          equipment,
+          description,
+          status: status as WorkOrderStatus,
+          contactName,
+          contactPhone,
+          expectedVisitTime,
+          orderNo: orderNo || generateOrderNo(state.workOrders),
+        });
+      });
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      validOrders,
+    };
+  },
+
+  importOrders: (csvData) => {
+    const state = get();
+    
+    if (state.currentRole !== 'dispatch') {
+      return { success: false, error: '权限不足：只有调度角色才能执行批量导入' };
+    }
+
+    const { valid, errors, validOrders } = get().validateImportData(csvData);
+
+    const blockingErrors = errors.filter(e => 
+      e.type === 'MISSING_STORE' || 
+      e.type === 'MISSING_EQUIPMENT' || 
+      e.type === 'MISSING_DESCRIPTION' ||
+      e.type === 'MISSING_CONTACT' ||
+      e.type === 'INVALID_STORE' ||
+      e.type === 'INVALID_DATE_FORMAT' ||
+      e.type === 'DUPLICATE_ORDER_NO'
+    );
+
+    if (blockingErrors.length > 0) {
+      return { success: false, error: `存在${blockingErrors.length}个阻断性错误，无法导入` };
+    }
+
+    const overwriteErrors = errors.filter(e => e.type === 'ORDER_EXISTS');
+    if (overwriteErrors.length > 0) {
+      return { success: false, error: `存在${overwriteErrors.length}个已存在的工单号，导入会覆盖原工单` };
+    }
+
+    const now = new Date().toISOString();
+    const newOrders: WorkOrder[] = validOrders.map(order => {
+      const existingOrder = state.workOrders.find(o => o.orderNo === order.orderNo);
+      const store = state.stores.find(s => s.id === order.storeId);
+      
+      return {
+        id: existingOrder?.id || generateId(),
+        orderNo: order.orderNo!,
+        storeId: order.storeId!,
+        equipment: order.equipment!,
+        description: order.description!,
+        status: order.status!,
+        engineerId: existingOrder?.engineerId || null,
+        engineerName: existingOrder?.engineerName || null,
+        repairRecord: existingOrder?.repairRecord || null,
+        reviewRemark: existingOrder?.reviewRemark || null,
+        reviewRating: existingOrder?.reviewRating || null,
+        contactName: order.contactName,
+        contactPhone: order.contactPhone,
+        expectedVisitTime: order.expectedVisitTime,
+        createdAt: existingOrder?.createdAt || now,
+        updatedAt: now,
+        version: (existingOrder?.version || 0) + 1,
+      };
+    });
+
+    const updatedWorkOrders = state.workOrders.filter(
+      o => !newOrders.some(n => n.orderNo === o.orderNo)
+    ).concat(newOrders);
+
+    let updatedTimelines = { ...state.timelineMap };
+    newOrders.forEach(order => {
+      const existingOrder = state.workOrders.find(o => o.orderNo === order.orderNo);
+      if (!existingOrder) {
+        const store = state.stores.find(s => s.id === order.storeId);
+        updatedTimelines = addTimeline(
+          updatedTimelines,
+          order.id,
+          '创建工单',
+          `批量导入: ${store?.name || '门店'}提交报修: ${order.equipment} - ${order.description}`,
+          'dispatch'
+        );
+      } else {
+        updatedTimelines = addTimeline(
+          updatedTimelines,
+          order.id,
+          '创建工单',
+          `批量导入更新: ${order.equipment} - ${order.description}`,
+          'dispatch'
+        );
+      }
+    });
+
+    const importResult: ImportResult = {
+      id: generateId(),
+      successCount: validOrders.length,
+      failureCount: errors.length,
+      totalCount: csvData.length - 1,
+      errors,
+      createdAt: now,
+      operator: roleNames[state.currentRole],
+    };
+
+    storage.setWorkOrders(updatedWorkOrders);
+    storage.setTimelines(updatedTimelines);
+    
+    const updatedImports = [...state.imports, importResult];
+    storage.setImports(updatedImports);
+
+    set({ 
+      workOrders: updatedWorkOrders, 
+      timelineMap: updatedTimelines,
+      imports: updatedImports,
+    });
+
+    return { success: true, result: importResult };
+  },
+
+  getImports: () => {
+    return get().imports;
+  },
+
   resetData: () => {
     storage.clearAll();
     set({
@@ -496,6 +791,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
         keyword: '',
       },
       exports: [],
+      imports: [],
       selectedOrderId: null,
     });
   },

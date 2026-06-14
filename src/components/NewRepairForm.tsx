@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../store/useStore';
-import { Plus, Store, AlertCircle, Check } from 'lucide-react';
+import { Plus, Store, AlertCircle, Check, User, Phone, Calendar } from 'lucide-react';
 import { clsx } from 'clsx';
 
 export function NewRepairForm() {
@@ -10,6 +10,9 @@ export function NewRepairForm() {
   const [storeId, setStoreId] = useState('');
   const [equipment, setEquipment] = useState('');
   const [description, setDescription] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [expectedVisitTime, setExpectedVisitTime] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
@@ -27,7 +30,14 @@ export function NewRepairForm() {
       return;
     }
 
-    const order = createOrder(storeId, equipment.trim(), description.trim());
+    const order = createOrder(
+      storeId, 
+      equipment.trim(), 
+      description.trim(),
+      contactName.trim() || undefined,
+      contactPhone.trim() || undefined,
+      expectedVisitTime || undefined
+    );
     setSuccess(true);
     
     setTimeout(() => {
@@ -85,7 +95,11 @@ export function NewRepairForm() {
                 {stores.map((store) => (
                   <button
                     key={store.id}
-                    onClick={() => setStoreId(store.id)}
+                    onClick={() => {
+                      setStoreId(store.id);
+                      if (!contactName) setContactName(store.contact);
+                      if (!contactPhone) setContactPhone(store.phone);
+                    }}
                     className={clsx(
                       'p-4 rounded-xl border text-left transition-all duration-200',
                       storeId === store.id
@@ -135,6 +149,54 @@ export function NewRepairForm() {
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="请详细描述故障现象，例如: 设备不制冷、显示异常代码、发出异响等..."
                 className="w-full h-32 p-4 bg-slate-900/50 border border-slate-700/50 rounded-xl text-slate-200 placeholder-slate-500 resize-none focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-3">
+                  <span className="flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    联系人
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  value={contactName}
+                  onChange={(e) => setContactName(e.target.value)}
+                  placeholder="联系人姓名"
+                  className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-xl text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-3">
+                  <span className="flex items-center gap-2">
+                    <Phone className="w-4 h-4" />
+                    联系电话
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  value={contactPhone}
+                  onChange={(e) => setContactPhone(e.target.value)}
+                  placeholder="联系电话"
+                  className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-xl text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-3">
+                <span className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4" />
+                  期望上门时间
+                </span>
+              </label>
+              <input
+                type="date"
+                value={expectedVisitTime}
+                onChange={(e) => setExpectedVisitTime(e.target.value)}
+                className="w-full px-4 py-3 bg-slate-900/50 border border-slate-700/50 rounded-xl text-slate-200 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 transition-all"
               />
             </div>
 

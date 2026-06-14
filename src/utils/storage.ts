@@ -1,4 +1,4 @@
-import { WorkOrder, Timeline, FilterState, Role, ExportResult } from '../types';
+import { WorkOrder, Timeline, FilterState, Role, ExportResult, ImportResult } from '../types';
 
 const STORAGE_KEYS = {
   WORK_ORDERS: 'repair_work_orders',
@@ -6,6 +6,7 @@ const STORAGE_KEYS = {
   CURRENT_ROLE: 'repair_current_role',
   FILTERS: 'repair_filters',
   EXPORTS: 'repair_exports',
+  IMPORTS: 'repair_imports',
 } as const;
 
 export const storage = {
@@ -56,6 +57,15 @@ export const storage = {
 
   setExports(exports: ExportResult[]): void {
     localStorage.setItem(STORAGE_KEYS.EXPORTS, JSON.stringify(exports));
+  },
+
+  getImports(): ImportResult[] {
+    const data = localStorage.getItem(STORAGE_KEYS.IMPORTS);
+    return data ? JSON.parse(data) : [];
+  },
+
+  setImports(imports: ImportResult[]): void {
+    localStorage.setItem(STORAGE_KEYS.IMPORTS, JSON.stringify(imports));
   },
 
   clearAll(): void {

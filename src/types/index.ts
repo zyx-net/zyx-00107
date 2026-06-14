@@ -48,6 +48,9 @@ export interface WorkOrder {
   repairRecord: string | null;
   reviewRemark: string | null;
   reviewRating: '满意' | '基本满意' | '不满意' | null;
+  contactName: string | null;
+  contactPhone: string | null;
+  expectedVisitTime: string | null;
   createdAt: string;
   updatedAt: string;
   version: number;
@@ -77,6 +80,38 @@ export interface ExportResult {
   name: string;
   data: WorkOrder[];
   createdAt: string;
+  filterSnapshot: FilterState;
+}
+
+export type ImportErrorType = 
+  | 'MISSING_STORE'
+  | 'MISSING_EQUIPMENT'
+  | 'MISSING_DESCRIPTION'
+  | 'MISSING_CONTACT'
+  | 'MISSING_VISIT_TIME'
+  | 'INVALID_STATUS'
+  | 'DUPLICATE_ORDER_NO'
+  | 'ORDER_EXISTS'
+  | 'INVALID_STORE'
+  | 'INVALID_DATE_FORMAT'
+  | 'OTHER';
+
+export interface ImportError {
+  row: number;
+  field: string;
+  type: ImportErrorType;
+  message: string;
+  originalData: Record<string, string>;
+}
+
+export interface ImportResult {
+  id: string;
+  successCount: number;
+  failureCount: number;
+  totalCount: number;
+  errors: ImportError[];
+  createdAt: string;
+  operator: string;
 }
 
 export interface AppState {
@@ -87,5 +122,6 @@ export interface AppState {
   filters: FilterState;
   timelineMap: Record<string, Timeline[]>;
   exports: ExportResult[];
+  imports: ImportResult[];
   selectedOrderId: string | null;
 }
