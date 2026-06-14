@@ -932,6 +932,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     const expectedVisitTime = dataToValidate['期望上门时间'];
     const orderNo = dataToValidate['工单号'];
     const engineerName = dataToValidate['工程师'];
+    const allOrderNos = new Set(state.workOrders.map(o => o.orderNo));
     
     if (!storeName) {
       errors.push({ row: rowIndex, field: '门店名称', type: 'MISSING_STORE', message: '门店名称不能为空', originalData: dataToValidate });
@@ -968,8 +969,43 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       errors.push({ row: rowIndex, field: '状态', type: 'INVALID_STATUS', message: `状态"${status}"无效，可选值: ${validStatuses.join('、')}`, originalData: dataToValidate });
     }
     
+    if (orderNo) {
+      if (allOrderNos.has(orderNo)) {
+        errors.push({ row: rowIndex, field: '工单号', type: 'DUPLICATE_ORDER_NO', message: `工单号"${orderNo}"已存在`, originalData: dataToValidate });
+      }
+      
+      const csvData = state.currentImportDraft!.csvData;
+      let duplicateCount = 0;
+      for (let i = 1; i < csvData.length; i++) {
+        if (i !== rowIndex) {
+          const otherRowHeaderMapping = state.currentImportDraft!.headerMapping;
+          const otherRow = csvData[i];
+          const getOtherMappedValue = (fieldName: string): string => {
+            const targetIndex = state.currentImportDraft!.targetHeaders.indexOf(fieldName);
+            if (targetIndex === -1) return '';
+            for (const [origIdx, tgtIdx] of Object.entries(otherRowHeaderMapping)) {
+              if (tgtIdx === targetIndex) {
+                return otherRow[parseInt(origIdx)]?.trim() || '';
+              }
+            }
+            return '';
+          };
+          const otherOrderNo = getOtherMappedValue('工单号');
+          if (otherOrderNo && otherOrderNo === orderNo) {
+            duplicateCount++;
+          }
+        }
+      }
+      
+      if (duplicateCount > 0) {
+        errors.push({ row: rowIndex, field: '工单号', type: 'DUPLICATE_ORDER_NO', message: `工单号"${orderNo}"在文件中重复出现${duplicateCount + 1}次`, originalData: dataToValidate });
+      }
+    } else {
+      autoFixed.push('工单号: 将自动生成');
+    }
+    
     let validationStatus: 'pending' | 'valid' | 'warning' | 'error' = 'valid';
-    if (errors.some(e => ['MISSING_STORE', 'MISSING_EQUIPMENT', 'MISSING_DESCRIPTION', 'INVALID_STORE'].includes(e.type))) {
+    if (errors.some(e => ['MISSING_STORE', 'MISSING_EQUIPMENT', 'MISSING_DESCRIPTION', 'INVALID_STORE', 'MISSING_CONTACT', 'MISSING_VISIT_TIME', 'INVALID_DATE_FORMAT'].includes(e.type))) {
       validationStatus = 'error';
     } else if (errors.length > 0 || !orderNo) {
       validationStatus = 'warning';
@@ -1199,6 +1235,18 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       errors: allErrors,
     };
     
+    const fullImportResult: ImportResult = {
+      id: generateId(),
+      successCount: newOrders.length,
+      failureCount: skippedOrderNos.length + allErrors.length,
+      totalCount: rowsToImport.length + rowsToSkip.length,
+      errors: allErrors,
+      createdAt: now,
+      operator: roleNames[state.currentRole],
+    };
+    
+    const updatedImports = [...state.imports, fullImportResult];
+    storage.setImports(updatedImports);
     storage.setWorkOrders(updatedWorkOrders);
     storage.setTimelines(updatedTimelines);
     
@@ -1207,6 +1255,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     set({ 
       workOrders: updatedWorkOrders, 
       timelineMap: updatedTimelines,
+      imports: updatedImports,
     });
     
     return { success: true, result: importResult };

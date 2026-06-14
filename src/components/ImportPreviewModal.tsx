@@ -57,6 +57,7 @@ export function ImportPreviewModal({ isOpen, onClose, csvData, fileName }: Impor
     error?: string 
   } | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (isOpen && csvData.length > 1) {
@@ -112,13 +113,46 @@ export function ImportPreviewModal({ isOpen, onClose, csvData, fileName }: Impor
     }
   };
 
+  const handleClearEditing = () => {
+    setEditingCell(null);
+    setEditValue('');
+  };
+
   const handleRowRecheck = (rowIndex: number) => {
     const rowResultIndex = rowIndex - 1;
     if (currentImportDraft?.rowResults[rowResultIndex]) {
       const currentResult = currentImportDraft.rowResults[rowResultIndex];
       const correctedData = currentResult.correctedData || currentResult.originalData;
-      validateRow(rowIndex, correctedData);
+      const newResult = validateRow(rowIndex, correctedData);
+      
+      if (newResult.status === 'valid' || newResult.status === 'warning') {
+        setSelectedRows(prev => new Set([...prev, rowIndex]));
+      }
     }
+  };
+
+  const handleToggleSelectRow = (rowIndex: number) => {
+    setSelectedRows(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(rowIndex)) {
+        newSet.delete(rowIndex);
+      } else {
+        newSet.add(rowIndex);
+      }
+      return newSet;
+    });
+  };
+
+  const handleSelectAll = () => {
+    if (!currentImportDraft) return;
+    const allValidRows = currentImportDraft.rowResults
+      .filter(r => r.status === 'valid' || r.status === 'warning')
+      .map(r => r.rowIndex);
+    setSelectedRows(new Set(allValidRows));
+  };
+
+  const handleDeselectAll = () => {
+    setSelectedRows(new Set());
   };
 
   const handleRecheckAll = () => {
@@ -152,9 +186,27 @@ export function ImportPreviewModal({ isOpen, onClose, csvData, fileName }: Impor
 
     currentImportDraft.rowResults.forEach((result, index) => {
       const rowIndex = index + 1;
-      const isSelected = document.querySelector(`[data-row="${rowIndex}"]`)?.getAttribute('data-selected') === 'true';
       
-      if (isSelected) {
+      if (selectedRows.has(rowIndex)) {
+        rowsToImport.push(rowIndex);
+      } else {
+        rowsToSkip.push(rowIndex);
+      }
+    });
+
+    const result = importPartialOrders(rowsToImport, rowsToSkip);
+    setImportResult(result);
+  };
+
+  const handleImportValid = () => {
+    if (!currentImportDraft) return;
+
+    const rowsToImport: number[] = [];
+    const rowsToSkip: number[] = [];
+
+    currentImportDraft.rowResults.forEach((result, index) => {
+      const rowIndex = index + 1;
+      if (result.status === 'valid' || result.status === 'warning') {
         rowsToImport.push(rowIndex);
       } else {
         rowsToSkip.push(rowIndex);
@@ -469,6 +521,9 @@ export function ImportPreviewModal({ isOpen, onClose, csvData, fileName }: Impor
                 onCellSave={() => handleCellSave()}
                 onEditValueChange={setEditValue}
                 onRowRecheck={() => handleRowRecheck(result.rowIndex)}
+                onClearEditing={handleClearEditing}
+                onToggleSelect={() => handleToggleSelectRow(result.rowIndex)}
+                isSelected={selectedRows.has(result.rowIndex)}
                 headerMapping={currentImportDraft?.headerMapping || {}}
                 csvRow={csvData[result.rowIndex]}
                 stores={stores}
@@ -486,10 +541,29 @@ export function ImportPreviewModal({ isOpen, onClose, csvData, fileName }: Impor
 
         <div className="p-4 border-t border-slate-700/50 bg-slate-800/50 shrink-0">
           <div className="flex items-center justify-between">
-            <div className="text-sm text-slate-400">
-              草稿已自动保存，刷新页面后可继续编辑
+            <div className="flex items-center gap-4">
+              <div className="text-sm text-slate-400">
+                草稿已自动保存，刷新页面后可继续编辑
+              </div>
+              {selectedRows.size > 0 && (
+                <div className="text-sm text-blue-400">
+                  已选择 {selectedRows.size} 行
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-3">
+              <button
+                onClick={handleDeselectAll}
+                className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm transition-colors"
+              >
+                取消全选
+              </button>
+              <button
+                onClick={handleSelectAll}
+                className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm transition-colors"
+              >
+                全选有效行
+              </button>
               <button
                 onClick={handleDiscard}
                 className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition-colors"
@@ -497,10 +571,26 @@ export function ImportPreviewModal({ isOpen, onClose, csvData, fileName }: Impor
                 放弃
               </button>
               <button
-                onClick={handleImport}
+                onClick={handleImportSelected}
+                disabled={selectedRows.size === 0}
+                className={clsx(
+                  'flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-colors',
+                  selectedRows.size === 0
+                    ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
+                    : 'bg-blue-500 hover:bg-blue-600 text-white'
+                )}
+              >
+                <Upload className="w-4 h-4" />
+                {selectedRows.size === 0
+                  ? '选择要导入的行'
+                  : `导入选中 ${selectedRows.size} 行`
+                }
+              </button>
+              <button
+                onClick={handleImportValid}
                 disabled={stats.valid === 0 && stats.warning === 0}
                 className={clsx(
-                  'flex items-center gap-2 px-6 py-2.5 rounded-lg font-medium transition-colors',
+                  'flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-colors',
                   stats.valid === 0 && stats.warning === 0
                     ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
                     : 'bg-green-500 hover:bg-green-600 text-white'
@@ -509,7 +599,7 @@ export function ImportPreviewModal({ isOpen, onClose, csvData, fileName }: Impor
                 <Upload className="w-4 h-4" />
                 {stats.valid === 0 && stats.warning === 0
                   ? '无可导入数据'
-                  : `导入 ${stats.valid + stats.warning} 行`
+                  : `导入全部有效 (${stats.valid + stats.warning})`
                 }
               </button>
             </div>
@@ -530,6 +620,9 @@ interface RowCardProps {
   onCellSave: () => void;
   onEditValueChange: (value: string) => void;
   onRowRecheck: () => void;
+  onClearEditing: () => void;
+  onToggleSelect: () => void;
+  isSelected: boolean;
   headerMapping: Record<number, number>;
   csvRow: string[];
   stores: any[];
@@ -546,6 +639,9 @@ function RowCard({
   onCellSave,
   onEditValueChange,
   onRowRecheck,
+  onClearEditing,
+  onToggleSelect,
+  isSelected,
   headerMapping,
   csvRow,
   stores,
@@ -592,6 +688,16 @@ function RowCard({
         className="flex items-center gap-3 p-3 cursor-pointer hover:bg-slate-700/20"
         onClick={onToggleExpand}
       >
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={(e) => {
+            e.stopPropagation();
+            onToggleSelect();
+          }}
+          className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blue-500 focus:ring-blue-500 cursor-pointer"
+        />
+
         <button className="p-1 hover:bg-slate-600/50 rounded">
           {isExpanded ? (
             <ChevronDown className="w-4 h-4 text-slate-400" />
@@ -707,10 +813,7 @@ function RowCard({
                         <Check className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => {
-                          setEditingCell(null);
-                          setEditValue('');
-                        }}
+                        onClick={onClearEditing}
                         className="p-2 bg-slate-700/50 hover:bg-slate-700 rounded-lg text-slate-400"
                       >
                         <X className="w-4 h-4" />
@@ -731,7 +834,9 @@ function RowCard({
                         <Clock className="w-3.5 h-3.5 text-red-400" />
                       )}
                       {field === '工单号' && !currentValue && (
-                        <Hash className="w-3.5 h-3.5 text-blue-400" title="将自动生成" />
+                        <span title="将自动生成">
+                          <Hash className="w-3.5 h-3.5 text-blue-400" />
+                        </span>
                       )}
                       {field === '工程师' && !currentValue && (
                         <User className="w-3.5 h-3.5 text-slate-500" />
