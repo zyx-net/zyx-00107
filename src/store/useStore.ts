@@ -93,6 +93,11 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
 
   dispatchOrder: (orderId, engineerId, engineerName, expectedVersion) => {
     const state = get();
+    
+    if (state.currentRole !== 'dispatch') {
+      return { success: false, error: '权限不足：只有调度角色才能进行派工操作' };
+    }
+    
     const order = state.workOrders.find(o => o.id === orderId);
     
     if (!order) {
