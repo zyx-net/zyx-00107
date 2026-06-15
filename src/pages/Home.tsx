@@ -8,7 +8,8 @@ import { ImportHistory } from "../components/ImportHistory";
 import { ImportSessionCenter } from "../components/ImportSessionCenter";
 import { ImportSessionWorkflow } from "../components/ImportSessionWorkflow";
 import { useStore } from "../store/useStore";
-import { Settings, Download, RotateCcw, Upload, Lock, FolderOpen } from "lucide-react";
+import { Settings, Download, RotateCcw, Upload, Lock, FolderOpen, Table } from "lucide-react";
+import { Link } from "react-router-dom";
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { useState, useRef } from "react";
@@ -237,6 +238,13 @@ export default function Home() {
               </button>
               {canImport ? (
                 <>
+                  <Link
+                    to="/import-workbench"
+                    className="flex items-center gap-2 px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl font-medium transition-all duration-200 border border-indigo-600 hover:border-indigo-500"
+                  >
+                    <Table className="w-4 h-4" />
+                    导入作业台
+                  </Link>
                   <button
                     onClick={() => setShowSessionCenter(true)}
                     className="flex items-center gap-2 px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-xl font-medium transition-all duration-200 border border-purple-600 hover:border-purple-500"

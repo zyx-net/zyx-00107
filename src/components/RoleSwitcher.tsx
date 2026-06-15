@@ -1,7 +1,7 @@
 import { Role } from '../types';
 import { roleNames, roleColors } from '../data/initialData';
 import { useStore } from '../store/useStore';
-import { Store, Wrench, Users, ClipboardCheck } from 'lucide-react';
+import { Store, Wrench, Users, ClipboardCheck, Shield } from 'lucide-react';
 import { clsx } from 'clsx';
 
 const roleIcons: Record<Role, React.ReactNode> = {
@@ -9,9 +9,10 @@ const roleIcons: Record<Role, React.ReactNode> = {
   dispatch: <Users className="w-5 h-5" />,
   engineer: <Wrench className="w-5 h-5" />,
   quality: <ClipboardCheck className="w-5 h-5" />,
+  admin: <Shield className="w-5 h-5" />,
 };
 
-const roles: Role[] = ['store', 'dispatch', 'engineer', 'quality'];
+const roles: Role[] = ['store', 'dispatch', 'engineer', 'quality', 'admin'];
 
 export function RoleSwitcher() {
   const { currentRole, setRole } = useStore();

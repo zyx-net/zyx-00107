@@ -1,5 +1,5 @@
 import { useStore } from '../store/useStore';
-import { SessionRowState, ImportSession } from '../types';
+import { SessionRowState, ImportSession, Role } from '../types';
 import { 
   X, 
   CheckCircle, 
@@ -18,7 +18,13 @@ import {
   Clock,
   Hash,
   AlertTriangle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Lock,
+  Unlock,
+  Layers,
+  SkipForward,
+  RotateCcw,
+  CheckCheck,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useState, useEffect, useMemo } from 'react';
@@ -30,6 +36,14 @@ interface ImportSessionWorkflowProps {
 
 const TARGET_HEADERS = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号', '工程师'];
 const STATUS_OPTIONS = ['待派工', '已派工', '维修中', '待回访', '已完成', '已撤销'];
+
+const ROLE_LABELS: Record<Role, string> = {
+  store: '门店',
+  dispatch: '调度',
+  engineer: '工程师',
+  quality: '质检',
+  admin: '管理员',
+};
 
 export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkflowProps) {
   const { 
@@ -43,8 +57,13 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
     correctSessionRow,
     setSessionConflictResolution,
     clearSessionErrors,
+    lockSession,
+    unlockSession,
+    checkSessionPermission,
+    addTimelineEntry,
     stores,
-    engineers
+    engineers,
+    currentRole,
   } = useStore();
 
   const [showFilters, setShowFilters] = useState(false);
@@ -59,8 +78,25 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
   const [editValue, setEditValue] = useState('');
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const [importing, setImporting] = useState(false);
+  const [showBatchModal, setShowBatchModal] = useState(false);
+  const [batchStart, setBatchStart] = useState(1);
+  const [batchEnd, setBatchEnd] = useState(50);
+
+  const handleBatchStartChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value);
+    const maxRows = session?.progress.totalRows || 1;
+    setBatchStart(Math.max(1, Math.min(maxRows, value) || 1));
+  };
+
+  const handleBatchEndChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value);
+    const maxRows = session?.progress.totalRows || batchStart;
+    setBatchEnd(Math.max(batchStart, Math.min(maxRows, value) || batchStart));
+  };
 
   const session = getActiveSession();
+  const canWrite = session ? checkSessionPermission(session.id, 'write') : false;
+  const canAdmin = session ? checkSessionPermission(session.id, 'admin') : false;
 
   useEffect(() => {
     if (session) {
@@ -101,17 +137,19 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
       imported: session.statistics.importedRows,
       pending: session.statistics.pendingRows,
       failed: session.statistics.failedRows,
+      autoFixed: session.statistics.autoFixedCount,
     };
   }, [session]);
 
   const handleAutoFill = () => {
-    if (session) {
+    if (session && canWrite) {
       autoFillMissingOrderNos(session.id);
+      addTimelineEntry(session.id, '自动补号', `自动为待处理行生成工单号`, undefined, stats.pending);
     }
   };
 
   const handleImportBatch = async () => {
-    if (!session || importing) return;
+    if (!session || importing || !canWrite) return;
     
     setImporting(true);
     
@@ -119,40 +157,65 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
       const result = importSessionBatch(session.id);
       
       if (result.conflicts.length > 0) {
-        alert(`存在 ${result.conflicts.length} 个未解决的冲突，请先处理冲突后再继续导入`);
+        addTimelineEntry(session.id, '冲突检测', `检测到 ${result.conflicts.length} 个未解决冲突`, undefined, result.conflicts.length);
+      }
+      
+      if (result.successCount > 0) {
+        addTimelineEntry(session.id, '批次导入', `成功导入 ${result.successCount} 条记录`, undefined, result.successCount);
       }
     } finally {
       setImporting(false);
     }
   };
 
+  const handleCustomBatchImport = async () => {
+    if (!session || importing || !canWrite) return;
+    
+    setImporting(true);
+    
+    try {
+      const result = importSessionBatch(session.id, batchStart, batchEnd);
+      
+      if (result.successCount > 0) {
+        addTimelineEntry(session.id, '分批导入', `导入第 ${batchStart}-${batchEnd} 行，成功 ${result.successCount} 条`, undefined, result.successCount);
+      }
+    } finally {
+      setImporting(false);
+      setShowBatchModal(false);
+    }
+  };
+
   const handleResume = async () => {
-    if (!session || importing) return;
+    if (!session || importing || !canWrite) return;
     
     setImporting(true);
     
     try {
       resumeSession(session.id);
+      addTimelineEntry(session.id, '恢复执行', '从上次中断位置继续导入');
     } finally {
       setImporting(false);
     }
   };
 
   const handlePause = () => {
-    if (session) {
+    if (session && canWrite) {
       pauseSession(session.id);
+      addTimelineEntry(session.id, '暂停执行', '暂停导入会话');
     }
   };
 
   const handleExportErrors = () => {
     if (session) {
       exportSessionErrors(session.id);
+      addTimelineEntry(session.id, '导出错误', `导出 ${stats.error + stats.failed} 条错误记录`);
     }
   };
 
   const handleRecheckAll = () => {
     if (session) {
       validateSessionAllRows(session.id);
+      addTimelineEntry(session.id, '重新验证', '重新验证所有行数据');
     }
   };
 
@@ -165,7 +228,32 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
     
     if (errorRows.length > 0) {
       clearSessionErrors(session.id, errorRows);
+      addTimelineEntry(session.id, '清理错误', `清理 ${errorRows.length} 行错误标记`);
     }
+  };
+
+  const handleLock = () => {
+    if (session && canAdmin) {
+      lockSession(session.id);
+      addTimelineEntry(session.id, '锁定会话', '锁定会话防止其他用户操作');
+    }
+  };
+
+  const handleUnlock = () => {
+    if (session && canAdmin) {
+      unlockSession(session.id);
+      addTimelineEntry(session.id, '解锁会话', '解锁会话允许操作');
+    }
+  };
+
+  const handleSkipToNextBatch = () => {
+    if (!session) return;
+    
+    const nextStart = session.progress.currentBatchEnd + 1;
+    const nextEnd = Math.min(nextStart + session.progress.batchSize - 1, session.progress.totalRows);
+    
+    setBatchStart(nextStart);
+    setBatchEnd(nextEnd);
   };
 
   const toggleRowExpand = (rowIndex: number) => {
@@ -184,8 +272,9 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
   };
 
   const handleCellSave = () => {
-    if (editingCell && session) {
+    if (editingCell && session && canWrite) {
       correctSessionRow(session.id, editingCell.rowIndex, { [editingCell.field]: editValue });
+      addTimelineEntry(session.id, '修正数据', `修正第 ${editingCell.rowIndex} 行 ${editingCell.field}`, editingCell.rowIndex);
       setEditingCell(null);
       setEditValue('');
     }
@@ -206,18 +295,45 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
     }
   };
 
+  const handleConflictDecision = (rowIndex: number, resolution: 'skip' | 'overwrite' | 'new') => {
+    if (session && canWrite) {
+      setSessionConflictResolution(session.id, rowIndex, resolution);
+      addTimelineEntry(session.id, '冲突处理', `第 ${rowIndex} 行冲突决策: ${resolution === 'skip' ? '跳过' : resolution === 'overwrite' ? '覆盖' : '新建'}`, rowIndex);
+    }
+  };
+
+  const handleResolveAllConflicts = (resolution: 'skip' | 'overwrite' | 'new') => {
+    if (!session || !canWrite) return;
+    
+    const conflictRows = session.rowStates.filter(r => 
+      r.errors.some(e => e.type === 'ORDER_EXISTS' || e.type === 'DUPLICATE_ORDER_NO') &&
+      !r.conflictResolution
+    );
+    
+    conflictRows.forEach(row => {
+      setSessionConflictResolution(session.id, row.rowIndex, resolution);
+    });
+    
+    addTimelineEntry(session.id, '批量冲突处理', `批量处理 ${conflictRows.length} 个冲突，策略: ${resolution === 'skip' ? '跳过' : resolution === 'overwrite' ? '覆盖' : '新建'}`, undefined, conflictRows.length);
+  };
+
   if (!session) {
     return (
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
         <div className="bg-slate-800/95 rounded-2xl border border-slate-700/50 p-8 text-center">
-          <p className="text-slate-400">会话不存在</p>
+          <p className="text-slate-400">会话不存在或已被删除</p>
           <button onClick={onClose} className="mt-4 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg">
-            关闭
+            返回
           </button>
         </div>
       </div>
     );
   }
+
+  const hasUnresolvedConflicts = session.conflictSummary.unresolved > 0;
+  const hasErrors = stats.error > 0;
+  const hasPending = stats.pending > 0;
+  const hasImported = stats.imported > 0;
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -229,11 +345,41 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
                 <FileSpreadsheet className="w-5 h-5 text-blue-400" />
               </div>
               <div>
-                <h2 className="text-xl font-bold text-slate-100">导入会话详情</h2>
-                <p className="text-sm text-slate-400">{session.fileName}</p>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xl font-bold text-slate-100">导入会话详情</h2>
+                  {session.isLocked && (
+                    <span className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 rounded text-xs flex items-center gap-1">
+                      <Lock className="w-3 h-3" />
+                      已锁定
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-4 text-sm text-slate-400 mt-1">
+                  <span>{session.fileName}</span>
+                  <span>•</span>
+                  <span>操作员: {session.operator}</span>
+                  <span>•</span>
+                  <span>角色: {ROLE_LABELS[session.role]}</span>
+                  <span>•</span>
+                  <span>创建时间: {new Date(session.createdAt).toLocaleString('zh-CN')}</span>
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {canAdmin && (
+                <button
+                  onClick={session.isLocked ? handleUnlock : handleLock}
+                  className={clsx(
+                    'p-2 rounded-lg transition-colors',
+                    session.isLocked 
+                      ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30' 
+                      : 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
+                  )}
+                  title={session.isLocked ? '解锁会话' : '锁定会话'}
+                >
+                  {session.isLocked ? <Unlock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+                </button>
+              )}
               <button
                 onClick={() => setShowLogs(!showLogs)}
                 className={clsx(
@@ -277,7 +423,7 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
         )}
 
         <div className="p-4 border-b border-slate-700/50 bg-slate-800/30 shrink-0">
-          <div className="grid grid-cols-6 gap-4 mb-4">
+          <div className="grid grid-cols-7 gap-4 mb-4">
             <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-3">
               <div className="flex items-center gap-2 mb-1">
                 <CheckCircle className="w-4 h-4 text-green-400" />
@@ -313,8 +459,16 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
               </div>
               <div className="text-2xl font-bold text-emerald-400">{stats.imported}</div>
             </div>
+            <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <Zap className="w-4 h-4 text-purple-400" />
+                <span className="text-sm text-purple-400">自动补号</span>
+              </div>
+              <div className="text-2xl font-bold text-purple-400">{stats.autoFixed}</div>
+            </div>
             <div className="bg-slate-500/10 border border-slate-500/20 rounded-xl p-3">
               <div className="flex items-center gap-2 mb-1">
+                <Layers className="w-4 h-4 text-slate-400" />
                 <span className="text-sm text-slate-400">批次进度</span>
               </div>
               <div className="text-2xl font-bold text-slate-400">
@@ -351,15 +505,15 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
                 onClick={handleRecheckAll}
                 className="flex items-center gap-1.5 px-3 py-2 bg-slate-700/50 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition-colors"
               >
-                <RefreshCw className="w-4 h-4" />
+                <RotateCcw className="w-4 h-4" />
                 重新验证
               </button>
               <button
                 onClick={handleAutoFill}
-                disabled={stats.pending === 0}
+                disabled={stats.pending === 0 || !canWrite}
                 className={clsx(
                   'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors',
-                  stats.pending === 0
+                  stats.pending === 0 || !canWrite
                     ? 'bg-slate-700/30 text-slate-500 cursor-not-allowed'
                     : 'bg-purple-500/20 hover:bg-purple-500/30 text-purple-400'
                 )}
@@ -369,21 +523,34 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
               </button>
               <button
                 onClick={handleExportErrors}
-                disabled={stats.error === 0}
+                disabled={stats.error === 0 && stats.failed === 0}
                 className={clsx(
                   'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors',
-                  stats.error === 0
+                  stats.error === 0 && stats.failed === 0
                     ? 'bg-slate-700/30 text-slate-500 cursor-not-allowed'
-                    : 'bg-slate-700/50 hover:bg-slate-700 text-slate-300'
+                    : 'bg-red-500/20 hover:bg-red-500/30 text-red-400'
                 )}
               >
                 <Download className="w-4 h-4" />
                 导出错误
               </button>
+              <button
+                onClick={() => setShowBatchModal(true)}
+                disabled={stats.pending === 0 || !canWrite}
+                className={clsx(
+                  'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors',
+                  stats.pending === 0 || !canWrite
+                    ? 'bg-slate-700/30 text-slate-500 cursor-not-allowed'
+                    : 'bg-orange-500/20 hover:bg-orange-500/30 text-orange-400'
+                )}
+              >
+                <SkipForward className="w-4 h-4" />
+                分批导入
+              </button>
               {session.status === 'in_progress' ? (
                 <button
                   onClick={handlePause}
-                  disabled={importing}
+                  disabled={importing || !canWrite}
                   className="flex items-center gap-1.5 px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 rounded-lg text-sm transition-colors"
                 >
                   <Pause className="w-4 h-4" />
@@ -391,17 +558,17 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
                 </button>
               ) : (
                 <button
-                  onClick={handleImportBatch}
-                  disabled={stats.pending === 0 || importing}
+                  onClick={hasUnresolvedConflicts ? handleResume : handleImportBatch}
+                  disabled={stats.pending === 0 || importing || !canWrite}
                   className={clsx(
                     'flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-                    stats.pending === 0 || importing
+                    stats.pending === 0 || importing || !canWrite
                       ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
                       : 'bg-green-500 hover:bg-green-600 text-white'
                   )}
                 >
                   <Play className="w-4 h-4" />
-                  {importing ? '导入中...' : '导入批次'}
+                  {importing ? '导入中...' : (hasUnresolvedConflicts ? '继续处理' : '导入批次')}
                 </button>
               )}
             </div>
@@ -460,6 +627,50 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
           )}
         </div>
 
+        {(hasUnresolvedConflicts || hasErrors) && (
+          <div className="p-4 bg-yellow-500/10 border-b border-yellow-500/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {hasUnresolvedConflicts && (
+                  <div className="flex items-center gap-2 text-yellow-400">
+                    <AlertTriangle className="w-5 h-5" />
+                    <span className="font-medium">存在 {session.conflictSummary.unresolved} 个未解决的冲突</span>
+                  </div>
+                )}
+                {hasErrors && hasUnresolvedConflicts && <span className="text-slate-500">|</span>}
+                {hasErrors && (
+                  <div className="flex items-center gap-2 text-red-400">
+                    <AlertCircle className="w-5 h-5" />
+                    <span className="font-medium">存在 {stats.error} 个错误行</span>
+                  </div>
+                )}
+              </div>
+              {hasUnresolvedConflicts && canWrite && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleResolveAllConflicts('skip')}
+                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-medium transition-colors"
+                  >
+                    全部跳过
+                  </button>
+                  <button
+                    onClick={() => handleResolveAllConflicts('overwrite')}
+                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-medium transition-colors"
+                  >
+                    全部覆盖
+                  </button>
+                  <button
+                    onClick={() => handleResolveAllConflicts('new')}
+                    className="px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-lg text-xs font-medium transition-colors"
+                  >
+                    全部新建
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 overflow-auto p-4">
           <div className="space-y-2">
             {filteredRows.map(row => (
@@ -475,9 +686,11 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
                 onEditValueChange={setEditValue}
                 onClearEditing={handleClearEditing}
                 onRowRecheck={() => handleRecheckRow(row.rowIndex)}
+                onConflictDecision={(resolution) => handleConflictDecision(row.rowIndex, resolution)}
                 session={session}
                 stores={stores}
                 engineers={engineers}
+                canWrite={canWrite}
               />
             ))}
           </div>
@@ -485,11 +698,110 @@ export function ImportSessionWorkflow({ sessionId, onClose }: ImportSessionWorkf
 
         <div className="p-4 border-t border-slate-700/50 bg-slate-800/50 shrink-0">
           <div className="flex items-center justify-between text-sm text-slate-400">
-            <span>会话自动保存，刷新页面后可继续处理</span>
-            <span>批次大小: {session.progress.batchSize} 行</span>
+            <div className="flex items-center gap-4">
+              <span>会话自动保存，刷新页面后可继续处理</span>
+              <span className="text-slate-500">|</span>
+              <span>当前状态: {session.status === 'draft' ? '草稿' : 
+                               session.status === 'in_progress' ? '进行中' :
+                               session.status === 'paused' ? '已暂停' :
+                               session.status === 'partially_completed' ? '部分完成' :
+                               session.status === 'completed' ? '已完成' : '失败'}</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <span>批次大小: {session.progress.batchSize} 行</span>
+              <span>当前批次: {session.progress.currentBatchStart}-{session.progress.currentBatchEnd}</span>
+              {hasImported && hasPending && (
+                <button
+                  onClick={handleResume}
+                  disabled={!canWrite}
+                  className={clsx(
+                    'flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs transition-colors',
+                    !canWrite ? 'bg-slate-700/30 text-slate-500' : 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30'
+                  )}
+                >
+                  <CheckCheck className="w-3.5 h-3.5" />
+                  继续导入剩余
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
+
+      {showBatchModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-60 p-4">
+          <div className="bg-slate-800/95 rounded-xl border border-slate-700/50 w-full max-w-md p-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-slate-100 mb-4">分批导入设置</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-slate-400 mb-1">起始行号</label>
+                <input
+                  type="number"
+                  min="1"
+                  max={session.progress.totalRows}
+                  value={batchStart}
+                  onChange={handleBatchStartChange}
+                  className="w-full px-3 py-2 bg-slate-900/50 border border-slate-700/50 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-blue-500/50"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm text-slate-400 mb-1">结束行号</label>
+                <input
+                  type="number"
+                  min={batchStart}
+                  max={session.progress.totalRows}
+                  value={batchEnd}
+                  onChange={handleBatchEndChange}
+                  className="w-full px-3 py-2 bg-slate-900/50 border border-slate-700/50 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-blue-500/50"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSkipToNextBatch}
+                  className="flex-1 px-4 py-2 bg-slate-700/50 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-medium transition-colors"
+                >
+                  下一批次
+                </button>
+                <button
+                  onClick={() => {
+                    setBatchStart(session.progress.currentBatchStart);
+                    setBatchEnd(session.progress.currentBatchEnd);
+                  }}
+                  className="flex-1 px-4 py-2 bg-slate-700/50 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-medium transition-colors"
+                >
+                  当前批次
+                </button>
+              </div>
+
+              <div className="p-3 bg-slate-900/50 rounded-lg text-sm text-slate-400">
+                将导入第 <span className="text-blue-400 font-medium">{batchStart}</span> - <span className="text-blue-400 font-medium">{batchEnd}</span> 行，共 <span className="text-green-400 font-medium">{batchEnd - batchStart + 1}</span> 行
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 mt-6">
+              <button
+                onClick={() => setShowBatchModal(false)}
+                className="flex-1 px-4 py-2 bg-slate-700/50 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-medium transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleCustomBatchImport}
+                disabled={importing}
+                className={clsx(
+                  'flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+                  importing ? 'bg-slate-600 text-slate-400' : 'bg-green-500 hover:bg-green-600 text-white'
+                )}
+              >
+                {importing ? '导入中...' : '开始导入'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -505,9 +817,11 @@ interface SessionRowCardProps {
   onEditValueChange: (value: string) => void;
   onClearEditing: () => void;
   onRowRecheck: () => void;
+  onConflictDecision: (resolution: 'skip' | 'overwrite' | 'new') => void;
   session: ImportSession;
   stores: any[];
   engineers: any[];
+  canWrite: boolean;
 }
 
 function SessionRowCard({
@@ -521,12 +835,13 @@ function SessionRowCard({
   onEditValueChange,
   onClearEditing,
   onRowRecheck,
+  onConflictDecision,
   session,
   stores,
   engineers,
+  canWrite,
 }: SessionRowCardProps) {
   const data = row.correctedData || row.originalData;
-  const { setSessionConflictResolution } = useStore();
 
   const getStatusColor = () => {
     if (row.importStatus === 'imported') return 'border-emerald-500/30 bg-emerald-500/5';
@@ -548,9 +863,7 @@ function SessionRowCard({
     }
   };
 
-  const handleConflictDecision = (resolution: 'skip' | 'overwrite' | 'new') => {
-    setSessionConflictResolution(session.id, row.rowIndex, resolution);
-  };
+  const hasConflict = row.errors.some(e => e.type === 'ORDER_EXISTS' || e.type === 'DUPLICATE_ORDER_NO');
 
   return (
     <div className={clsx('border rounded-xl overflow-hidden transition-colors', getStatusColor())}>
@@ -569,6 +882,16 @@ function SessionRowCard({
         <div className="flex items-center gap-2">
           {getStatusIcon()}
           <span className="text-sm font-medium text-slate-300">第{row.rowIndex}行</span>
+          {row.importStatus === 'imported' && (
+            <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded text-xs">
+              已导入
+            </span>
+          )}
+          {row.importStatus === 'failed' && (
+            <span className="px-2 py-0.5 bg-red-500/20 text-red-400 rounded text-xs">
+              导入失败
+            </span>
+          )}
         </div>
 
         <div className="flex-1 flex items-center gap-4 text-sm text-slate-400">
@@ -596,36 +919,39 @@ function SessionRowCard({
           </div>
         </div>
 
-        {row.importStatus === 'imported' && (
-          <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded text-xs">
-            已导入
-          </span>
+        {hasConflict && !row.conflictResolution && (
+          <div className="flex items-center gap-1 text-xs text-yellow-400">
+            <AlertTriangle className="w-3 h-3" />
+            未解决冲突
+          </div>
         )}
 
-        {row.errors.length > 0 && (
+        {row.errors.length > 0 && !hasConflict && (
           <div className="flex items-center gap-1 text-xs text-red-400">
             <AlertCircle className="w-3 h-3" />
             {row.errors[0].message}
           </div>
         )}
 
-        <button
-          onClick={(e) => { e.stopPropagation(); onRowRecheck(); }}
-          className="p-1.5 hover:bg-slate-600/50 rounded text-slate-400 hover:text-blue-400"
-          title="重新验证此行"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-        </button>
+        {canWrite && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRowRecheck(); }}
+            className="p-1.5 hover:bg-slate-600/50 rounded text-slate-400 hover:text-blue-400"
+            title="重新验证此行"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
       {isExpanded && (
         <div className="border-t border-slate-700/30 p-4 bg-slate-800/30">
-          {row.errors.some(e => e.type === 'ORDER_EXISTS') && (
+          {hasConflict && (
             <div className="mb-4 p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
               <div className="text-sm text-yellow-400 mb-2">工单号冲突处理</div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => handleConflictDecision('skip')}
+                  onClick={() => onConflictDecision('skip')}
                   className={clsx(
                     'px-3 py-1.5 rounded-lg text-sm transition-colors',
                     row.conflictResolution === 'skip'
@@ -636,7 +962,7 @@ function SessionRowCard({
                   跳过
                 </button>
                 <button
-                  onClick={() => handleConflictDecision('overwrite')}
+                  onClick={() => onConflictDecision('overwrite')}
                   className={clsx(
                     'px-3 py-1.5 rounded-lg text-sm transition-colors',
                     row.conflictResolution === 'overwrite'
@@ -647,7 +973,7 @@ function SessionRowCard({
                   覆盖
                 </button>
                 <button
-                  onClick={() => handleConflictDecision('new')}
+                  onClick={() => onConflictDecision('new')}
                   className={clsx(
                     'px-3 py-1.5 rounded-lg text-sm transition-colors',
                     row.conflictResolution === 'new'
@@ -731,8 +1057,12 @@ function SessionRowCard({
                     </div>
                   ) : (
                     <div 
-                      className="flex items-center gap-2 px-3 py-2 bg-slate-900/50 border border-slate-700/30 rounded-lg cursor-pointer hover:border-slate-600/50 transition-colors group"
-                      onClick={() => onCellEdit(row.rowIndex, field, currentValue)}
+                      className={clsx(
+                        'flex items-center gap-2 px-3 py-2 bg-slate-900/50 border rounded-lg cursor-pointer hover:border-slate-600/50 transition-colors group',
+                        canWrite ? 'hover:border-slate-600/50' : 'cursor-default',
+                        row.validationStatus === 'error' ? 'border-red-500/30' : 'border-slate-700/30'
+                      )}
+                      onClick={() => canWrite && onCellEdit(row.rowIndex, field, currentValue)}
                     >
                       <span className={clsx(
                         'flex-1 text-sm',
@@ -746,9 +1076,11 @@ function SessionRowCard({
                       {field === '工单号' && row.autoGeneratedOrderNo && (
                         <span className="text-xs text-blue-400">自动生成</span>
                       )}
-                      <span className="text-xs text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity">
-                        点击编辑
-                      </span>
+                      {canWrite && (
+                        <span className="text-xs text-slate-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                          点击编辑
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>

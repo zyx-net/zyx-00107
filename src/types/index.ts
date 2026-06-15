@@ -1,4 +1,4 @@
-export type Role = 'store' | 'dispatch' | 'engineer' | 'quality';
+export type Role = 'store' | 'dispatch' | 'engineer' | 'quality' | 'admin';
 
 export type WorkOrderStatus = 
   | '待派工'
@@ -7,6 +7,24 @@ export type WorkOrderStatus =
   | '待回访'
   | '已完成'
   | '已撤销';
+
+export type PermissionLevel = 'read' | 'write' | 'admin';
+
+export interface SessionPermission {
+  role: Role;
+  level: PermissionLevel;
+}
+
+export interface SessionTimelineEntry {
+  id: string;
+  timestamp: string;
+  action: string;
+  operator: string;
+  role: Role;
+  details: string;
+  rowIndex?: number;
+  affectedCount?: number;
+}
 
 export type TimelineAction =
   | '创建工单'
@@ -95,6 +113,7 @@ export type ImportErrorType =
   | 'ORDER_EXISTS'
   | 'INVALID_STORE'
   | 'INVALID_DATE_FORMAT'
+  | 'VALIDATION_ERROR'
   | 'OTHER';
 
 export interface ImportError {
@@ -240,6 +259,7 @@ export interface ImportSession {
   conflictSummary: SessionConflictSummary;
   progress: SessionBatchProgress;
   operationLogs: SessionOperationLog[];
+  timeline: SessionTimelineEntry[];
   currentStep: 'mapping' | 'validation' | 'correction' | 'conflict' | 'import';
   createdAt: string;
   updatedAt: string;
@@ -247,6 +267,9 @@ export interface ImportSession {
   completedAt?: string;
   operator: string;
   role: Role;
+  permissions: SessionPermission[];
+  isLocked: boolean;
+  lockExpiresAt?: string;
 }
 
 export interface SessionImportResult {

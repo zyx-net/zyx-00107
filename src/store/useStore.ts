@@ -21,6 +21,8 @@ import {
   SessionConflictSummary,
   SessionBatchProgress,
   SessionImportResult,
+  SessionTimelineEntry,
+  PermissionLevel,
 } from '../types';
 import { 
   initialWorkOrders, 
@@ -75,6 +77,11 @@ interface AppActions {
   pauseSession: (sessionId: string) => void;
   clearSessionErrors: (sessionId: string, rowIndices: number[]) => void;
   exportSessionErrors: (sessionId: string) => void;
+  getSessionPermission: (sessionId: string) => PermissionLevel;
+  checkSessionPermission: (sessionId: string, requiredLevel: PermissionLevel) => boolean;
+  lockSession: (sessionId: string) => boolean;
+  unlockSession: (sessionId: string) => void;
+  addTimelineEntry: (sessionId: string, action: string, details: string, rowIndex?: number, affectedCount?: number) => void;
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 15);
@@ -122,6 +129,55 @@ const createOperationLog = (
   beforeState,
   afterState,
 });
+
+const createTimelineEntry = (
+  action: string,
+  details: string,
+  role: Role,
+  operator: string,
+  rowIndex?: number,
+  affectedCount?: number
+): SessionTimelineEntry => ({
+  id: generateId(),
+  timestamp: new Date().toISOString(),
+  action,
+  operator,
+  role,
+  details,
+  rowIndex,
+  affectedCount,
+});
+
+const getDefaultPermissions = (creatorRole: Role) => {
+  const permissions = [];
+  
+  if (creatorRole === 'admin') {
+    permissions.push({ role: 'admin', level: 'admin' as PermissionLevel });
+  }
+  
+  if (creatorRole === 'dispatch' || creatorRole === 'admin') {
+    permissions.push({ role: 'dispatch', level: 'write' as PermissionLevel });
+  }
+  
+  permissions.push({ role: creatorRole, level: 'admin' as PermissionLevel });
+  
+  return permissions;
+};
+
+const checkRolePermission = (role: Role, requiredLevel: PermissionLevel): boolean => {
+  const levelOrder: Record<Role, PermissionLevel> = {
+    admin: 'admin',
+    dispatch: 'write',
+    quality: 'read',
+    engineer: 'read',
+    store: 'read',
+  };
+  
+  const currentLevel = levelOrder[role] || 'read';
+  const levels: PermissionLevel[] = ['read', 'write', 'admin'];
+  
+  return levels.indexOf(currentLevel) >= levels.indexOf(requiredLevel);
+};
 
 const calculateSessionStatistics = (rowStates: SessionRowState[]): SessionStatistics => {
   return rowStates.reduce((stats, row) => {
@@ -1406,15 +1462,15 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
 
   createImportSession: (fileName, originalHeaders, csvData, targetHeaders, headerMapping) => {
     const state = get();
-    const sessionId = generateId();
-    const rowStates: SessionRowState[] = [];
     
-    for (let i = 1; i < csvData.length; i++) {
-      const rowState = get().validateSessionRow(sessionId, i);
-      rowStates.push(rowState);
+    if (!checkRolePermission(state.currentRole, 'write')) {
+      throw new Error('权限不足：只有调度或管理员角色才能创建导入会话');
     }
     
-    const session: ImportSession = {
+    const sessionId = generateId();
+    const now = new Date().toISOString();
+    
+    const tempSession: ImportSession = {
       id: sessionId,
       fileName,
       status: 'draft',
@@ -1422,9 +1478,27 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       targetHeaders,
       headerMapping,
       csvData,
-      rowStates,
-      statistics: calculateSessionStatistics(rowStates),
-      conflictSummary: calculateConflictSummary(rowStates),
+      rowStates: [],
+      statistics: {
+        totalRows: csvData.length - 1,
+        validRows: 0,
+        warningRows: 0,
+        errorRows: 0,
+        pendingRows: csvData.length - 1,
+        importedRows: 0,
+        skippedRows: 0,
+        failedRows: 0,
+        autoFixedCount: 0,
+      },
+      conflictSummary: {
+        totalConflicts: 0,
+        resolved: 0,
+        unresolved: 0,
+        byType: {
+          orderExists: 0,
+          duplicateInFile: 0,
+        },
+      },
       progress: {
         totalRows: csvData.length - 1,
         processedRows: 0,
@@ -1435,19 +1509,41 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       operationLogs: [
         createOperationLog('创建会话', `创建导入会话: ${fileName}`),
       ],
+      timeline: [
+        createTimelineEntry('创建会话', `创建导入会话: ${fileName}`, state.currentRole, roleNames[state.currentRole], undefined, csvData.length - 1),
+      ],
       currentStep: 'validation',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastAccessedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
+      lastAccessedAt: now,
       operator: roleNames[state.currentRole],
       role: state.currentRole,
+      permissions: getDefaultPermissions(state.currentRole),
+      isLocked: false,
     };
     
-    const updatedSessions = [...state.importSessions, session];
+    const updatedSessions = [...state.importSessions, tempSession];
     storage.setImportSessions(updatedSessions);
     storage.setActiveSessionId(sessionId);
-    
     set({ importSessions: updatedSessions, activeSessionId: sessionId });
+    
+    const rowStates: SessionRowState[] = [];
+    for (let i = 1; i < csvData.length; i++) {
+      const rowState = get().validateSessionRow(sessionId, i);
+      rowStates.push(rowState);
+    }
+    
+    const session: ImportSession = {
+      ...tempSession,
+      rowStates,
+      statistics: calculateSessionStatistics(rowStates),
+      conflictSummary: calculateConflictSummary(rowStates),
+    };
+    
+    const finalSessions = [...updatedSessions.map(s => s.id === sessionId ? session : s)];
+    storage.setImportSessions(finalSessions);
+    set({ importSessions: finalSessions });
+    
     return session;
   },
 
@@ -1599,7 +1695,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     }
     
     if (orderNo) {
-      if (allOrderNos.has(orderNo)) {
+      if (allOrderNos.has(orderNo) && !existingRowState?.conflictResolution) {
         errors.push({ row: rowIndex, field: '工单号', type: 'ORDER_EXISTS', message: `工单号"${orderNo}"已存在`, originalData: dataToValidate });
       }
       
@@ -1715,9 +1811,29 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     const existingRowState = session.rowStates.find(r => r.rowIndex === rowIndex);
     const beforeState = { ...existingRowState };
     
-    const newRowStates = session.rowStates.map(r => 
-      r.rowIndex === rowIndex ? { ...r, conflictResolution: resolution } : r
-    );
+    const newRowStates = session.rowStates.map(r => {
+      if (r.rowIndex === rowIndex) {
+        const filteredErrors = r.errors.filter(e => e.type !== 'ORDER_EXISTS');
+        let newValidationStatus = r.validationStatus;
+        
+        if (filteredErrors.length === 0) {
+          newValidationStatus = 'valid';
+        } else if (!filteredErrors.some(e => 
+          ['MISSING_STORE', 'MISSING_EQUIPMENT', 'MISSING_DESCRIPTION', 'INVALID_STORE', 'MISSING_CONTACT', 'MISSING_VISIT_TIME', 'INVALID_DATE_FORMAT'].includes(e.type)
+        )) {
+          newValidationStatus = 'warning';
+        }
+        
+        return {
+          ...r,
+          conflictResolution: resolution,
+          errors: filteredErrors,
+          validationStatus: newValidationStatus,
+          importStatus: r.importStatus === 'failed' ? 'pending' as const : r.importStatus,
+        };
+      }
+      return r;
+    });
     
     const operationLog = createOperationLog(
       '冲突决策',
@@ -1729,6 +1845,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     
     get().updateImportSession(sessionId, {
       rowStates: newRowStates,
+      statistics: calculateSessionStatistics(newRowStates),
       conflictSummary: calculateConflictSummary(newRowStates),
       operationLogs: [...session.operationLogs, operationLog],
     });
@@ -1748,10 +1865,7 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       const data = row.correctedData || row.originalData;
       if (data['工单号']) return row;
       
-      const hasBlockingErrors = row.errors.some(e => 
-        ['MISSING_STORE', 'MISSING_EQUIPMENT', 'MISSING_DESCRIPTION', 'INVALID_STORE', 'MISSING_CONTACT', 'MISSING_VISIT_TIME', 'INVALID_DATE_FORMAT'].includes(e.type)
-      );
-      if (hasBlockingErrors) return row;
+      if (row.validationStatus === 'error') return row;
       
       const year = new Date().getFullYear();
       let count = state.workOrders.length + generatedOrderNos.size + 1;
@@ -1805,8 +1919,14 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
       return { sessionId, successCount: 0, failedCount: 0, skippedCount: 0, importedOrderIds: [], importedOrderNos: [], errors: [], conflicts: [], operationLogs: [] };
     }
     
-    const start = batchStart ?? session.progress.currentBatchStart;
-    const end = batchEnd ?? session.progress.currentBatchEnd;
+    let start = batchStart ?? session.progress.currentBatchStart;
+    let end = batchEnd ?? session.progress.currentBatchEnd;
+    
+    if (start > end) {
+      start = 1;
+      end = session.progress.totalRows;
+    }
+    
     const now = new Date().toISOString();
     
     const newOrders: WorkOrder[] = [];
@@ -1819,11 +1939,31 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     const pendingRows = session.rowStates.filter(r => 
       r.rowIndex >= start && 
       r.rowIndex <= end && 
-      r.importStatus === 'pending' &&
-      (r.validationStatus === 'valid' || r.validationStatus === 'warning')
+      r.importStatus === 'pending'
     );
     
-    for (const row of pendingRows) {
+    const errorRows = session.rowStates.filter(r =>
+      r.rowIndex >= start &&
+      r.rowIndex <= end &&
+      r.importStatus === 'pending' &&
+      r.validationStatus === 'error'
+    );
+    
+    errorRows.forEach(row => {
+      errors.push({
+        row: row.rowIndex,
+        field: '',
+        type: 'VALIDATION_ERROR',
+        message: '数据验证失败',
+        originalData: row.originalData,
+      });
+    });
+    
+    const processableRows = pendingRows.filter(r => 
+      r.validationStatus === 'valid' || r.validationStatus === 'warning'
+    );
+    
+    for (const row of processableRows) {
       const data = row.correctedData || row.originalData;
       const storeName = data['门店名称'];
       const store = state.stores.find(s => s.name === storeName);
@@ -2053,5 +2193,96 @@ export const useStore = create<AppState & AppActions>((set, get) => ({
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  },
+
+  getSessionPermission: (sessionId) => {
+    const state = get();
+    const session = state.importSessions.find(s => s.id === sessionId);
+    if (!session) return 'read';
+    
+    const permission = session.permissions.find(p => p.role === state.currentRole);
+    if (permission) return permission.level;
+    
+    return checkRolePermission(state.currentRole, 'admin') ? 'admin' : 'read';
+  },
+
+  checkSessionPermission: (sessionId, requiredLevel) => {
+    const state = get();
+    
+    if (state.currentRole === 'admin') return true;
+    
+    const session = state.importSessions.find(s => s.id === sessionId);
+    if (!session) return false;
+    
+    const permission = session.permissions.find(p => p.role === state.currentRole);
+    if (permission) {
+      const levels: PermissionLevel[] = ['read', 'write', 'admin'];
+      return levels.indexOf(permission.level) >= levels.indexOf(requiredLevel);
+    }
+    
+    return checkRolePermission(state.currentRole, requiredLevel);
+  },
+
+  lockSession: (sessionId) => {
+    const state = get();
+    const session = state.importSessions.find(s => s.id === sessionId);
+    if (!session) return false;
+    
+    if (!checkRolePermission(state.currentRole, 'write')) {
+      return false;
+    }
+    
+    const now = new Date().getTime();
+    if (session.isLocked && session.lockExpiresAt) {
+      const lockExpires = new Date(session.lockExpiresAt).getTime();
+      if (now < lockExpires) {
+        return false;
+      }
+    }
+    
+    const lockExpiresAt = new Date(now + 30 * 60 * 1000).toISOString();
+    
+    get().updateImportSession(sessionId, { 
+      isLocked: true, 
+      lockExpiresAt,
+      updatedAt: new Date().toISOString(),
+    });
+    
+    return true;
+  },
+
+  unlockSession: (sessionId) => {
+    const state = get();
+    const session = state.importSessions.find(s => s.id === sessionId);
+    if (!session) return;
+    
+    if (!checkRolePermission(state.currentRole, 'admin')) {
+      return;
+    }
+    
+    get().updateImportSession(sessionId, { 
+      isLocked: false, 
+      lockExpiresAt: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+  },
+
+  addTimelineEntry: (sessionId, action, details, rowIndex, affectedCount) => {
+    const state = get();
+    const session = state.importSessions.find(s => s.id === sessionId);
+    if (!session) return;
+    
+    const newEntry = createTimelineEntry(
+      action, 
+      details, 
+      state.currentRole, 
+      roleNames[state.currentRole], 
+      rowIndex, 
+      affectedCount
+    );
+    
+    get().updateImportSession(sessionId, {
+      timeline: [...session.timeline, newEntry],
+    });
   },
 }));

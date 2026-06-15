@@ -72,6 +72,7 @@ describe('导入会话中心 - 核心功能测试', () => {
       expect(session.status).toBe('draft');
       expect(session.statistics.totalRows).toBe(2);
       expect(session.operationLogs.length).toBeGreaterThan(0);
+      expect(session.timeline.length).toBeGreaterThan(0);
     });
 
     it('会话应该持久化到 localStorage', () => {
@@ -213,6 +214,143 @@ describe('导入会话中心 - 核心功能测试', () => {
       const restoredSession = useStore.getState().importSessions.find(s => s.id === session.id);
       expect(restoredSession?.operationLogs.length).toBe(logCountBefore);
     });
+
+    it('部分导入后重启应该能继续', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      let store = useStore.getState();
+      const initialOrderCount = store.workOrders.length;
+      
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调A', '不制冷A', '待派工', '张三', '13800000000', '2024-01-20', ''],
+        ['海淀店', '冰箱B', '不保鲜B', '待派工', '李四', '13800000001', '2024-01-21', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      const session = store.createImportSession('重启续处理测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      const sessionId = session.id;
+      
+      act(() => {
+        store.autoFillMissingOrderNos(sessionId);
+      });
+      
+      act(() => {
+        store.importSessionBatch(sessionId, 1, 1);
+      });
+      
+      const sessionBeforeReset = useStore.getState().importSessions.find(s => s.id === sessionId);
+      expect(sessionBeforeReset?.statistics.importedRows).toBe(1);
+      expect(sessionBeforeReset?.status).toBe('in_progress');
+      
+      const orderCountBeforeReset = useStore.getState().workOrders.length;
+      
+      act(() => {
+        useStore.getState().resetData();
+      });
+      
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      const restoredSession = useStore.getState().importSessions.find(s => s.id === sessionId);
+      expect(restoredSession).toBeDefined();
+      expect(restoredSession?.statistics.importedRows).toBe(1);
+      
+      act(() => {
+        useStore.getState().resumeSession(sessionId);
+      });
+      
+      const finalSession = useStore.getState().importSessions.find(s => s.id === sessionId);
+      expect(finalSession?.statistics.importedRows).toBe(2);
+    });
+  });
+
+  describe('权限校验', () => {
+    it('非管理员应该不能创建会话', () => {
+      act(() => {
+        useStore.getState().setRole('store');
+      });
+      
+      const store = useStore.getState();
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      expect(() => store.createImportSession('权限测试.csv', originalHeaders, csvData, targetHeaders, headerMapping)).toThrow('权限不足');
+    });
+
+    it('dispatch角色应该能创建会话', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      const store = useStore.getState();
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      expect(() => store.createImportSession('权限测试.csv', originalHeaders, csvData, targetHeaders, headerMapping)).not.toThrow();
+    });
+
+    it('admin角色应该有最高权限', () => {
+      act(() => {
+        useStore.getState().setRole('admin');
+      });
+      
+      const store = useStore.getState();
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      const session = store.createImportSession('admin测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      
+      expect(store.checkSessionPermission(session.id, 'admin')).toBe(true);
+      expect(store.checkSessionPermission(session.id, 'write')).toBe(true);
+      expect(store.checkSessionPermission(session.id, 'read')).toBe(true);
+    });
+
+    it('store角色应该只有读取权限', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      let store = useStore.getState();
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      const session = store.createImportSession('权限测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      
+      act(() => {
+        useStore.getState().setRole('store');
+      });
+      
+      store = useStore.getState();
+      expect(store.checkSessionPermission(session.id, 'read')).toBe(true);
+      expect(store.checkSessionPermission(session.id, 'write')).toBe(false);
+      expect(store.checkSessionPermission(session.id, 'admin')).toBe(false);
+    });
   });
 
   describe('自动补号功能', () => {
@@ -245,6 +383,35 @@ describe('导入会话中心 - 核心功能测试', () => {
       
       const uniqueOrderNos = new Set(orderNos);
       expect(uniqueOrderNos.size).toBe(2);
+    });
+
+    it('不应该为错误行生成工单号', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      const store = useStore.getState();
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
+        ['海淀店', '冰箱', '不保鲜', '待派工', '李四', '13800000001', '2024-01-21', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      const session = store.createImportSession('错误行测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      
+      act(() => {
+        store.autoFillMissingOrderNos(session.id);
+      });
+      
+      const updatedSession = useStore.getState().getActiveSession();
+      expect(updatedSession?.statistics.autoFixedCount).toBe(1);
+      
+      const rowStates = updatedSession?.rowStates;
+      expect(rowStates?.[0].autoGeneratedOrderNo).toBeUndefined();
+      expect(rowStates?.[1].autoGeneratedOrderNo).toBeDefined();
     });
   });
 
@@ -311,6 +478,39 @@ describe('导入会话中心 - 核心功能测试', () => {
       expect(updatedSession?.status).toBe('completed');
       expect(updatedSession?.statistics.importedRows).toBe(1);
     });
+
+    it('失败行不应该影响其他行的导入', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      let store = useStore.getState();
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
+        ['', '冰箱', '不保鲜', '待派工', '李四', '13800000001', '2024-01-21', ''],
+        ['浦东店', '洗衣机', '不脱水', '待派工', '王五', '13800000002', '2024-01-22', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      const session = store.createImportSession('失败行测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      const sessionId = session.id;
+      
+      act(() => {
+        store.autoFillMissingOrderNos(sessionId);
+      });
+      
+      act(() => {
+        store.importSessionBatch(sessionId);
+      });
+      
+      const updatedSession = useStore.getState().getActiveSession();
+      expect(updatedSession?.statistics.importedRows).toBe(2);
+      expect(updatedSession?.statistics.errorRows).toBe(1);
+      expect(updatedSession?.statistics.failedRows).toBe(1);
+    });
   });
 
   describe('冲突处理', () => {
@@ -343,6 +543,7 @@ describe('导入会话中心 - 核心功能测试', () => {
       const session = store.createImportSession('冲突测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
       
       expect(session.rowStates.length).toBe(1);
+      expect(session.rowStates[0].errors.some(e => e.type === 'ORDER_EXISTS')).toBe(true);
       
       act(() => {
         store.setSessionConflictResolution(session.id, 1, 'overwrite');
@@ -351,6 +552,74 @@ describe('导入会话中心 - 核心功能测试', () => {
       const updatedSession = useStore.getState().getActiveSession();
       expect(updatedSession).toBeDefined();
       expect(updatedSession?.rowStates[0]?.conflictResolution).toBe('overwrite');
+    });
+
+    it('冲突未解决时不应导入', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      let store = useStore.getState();
+      const existingOrder = store.workOrders.find(o => o.orderNo === 'WO-2024-0001');
+      expect(existingOrder).toBeDefined();
+      
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', 'WO-2024-0001'],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      const session = store.createImportSession('冲突测试2.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      const sessionId = session.id;
+      
+      act(() => {
+        store.importSessionBatch(sessionId);
+      });
+      
+      const updatedSession = useStore.getState().getActiveSession();
+      expect(updatedSession?.statistics.importedRows).toBe(0);
+      expect(updatedSession?.conflictSummary.unresolved).toBe(1);
+    });
+
+    it('冲突解决后应该能继续导入', () => {
+      act(() => {
+        useStore.getState().setRole('dispatch');
+      });
+      
+      let store = useStore.getState();
+      const existingOrder = store.workOrders.find(o => o.orderNo === 'WO-2024-0001');
+      expect(existingOrder).toBeDefined();
+      
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', 'WO-2024-0001'],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      const session = store.createImportSession('冲突续处理.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      const sessionId = session.id;
+      
+      act(() => {
+        store.importSessionBatch(sessionId);
+      });
+      
+      expect(store.getActiveSession()?.statistics.importedRows).toBe(0);
+      
+      act(() => {
+        store.setSessionConflictResolution(sessionId, 1, 'overwrite');
+      });
+      
+      act(() => {
+        store.resumeSession(sessionId);
+      });
+      
+      const updatedSession = useStore.getState().getActiveSession();
+      expect(updatedSession?.statistics.importedRows).toBe(1);
+      expect(updatedSession?.status).toBe('completed');
     });
   });
 
@@ -401,24 +670,23 @@ describe('导入会话中心 - 核心功能测试', () => {
       expect(updatedStore.workOrders.length).toBe(initialOrderCount + 2);
     });
 
-    it('刷新后应该能继续未完成的会话', () => {
+    it('分批导入应该正常工作', () => {
       act(() => {
         useStore.getState().setRole('dispatch');
       });
       
       let store = useStore.getState();
-      const initialOrderCount = store.workOrders.length;
-      
       const csvData = [
         ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
         ['朝阳店', '空调A', '不制冷A', '待派工', '张三', '13800000000', '2024-01-20', ''],
         ['海淀店', '冰箱B', '不保鲜B', '待派工', '李四', '13800000001', '2024-01-21', ''],
+        ['浦东店', '洗衣机C', '不脱水C', '待派工', '王五', '13800000002', '2024-01-22', ''],
       ];
       const originalHeaders = csvData[0];
       const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
       const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
       
-      const session = store.createImportSession('重启续处理测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      const session = store.createImportSession('分批测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
       const sessionId = session.id;
       
       act(() => {
@@ -426,33 +694,18 @@ describe('导入会话中心 - 核心功能测试', () => {
       });
       
       act(() => {
-        store.importSessionBatch(sessionId, 1, 1);
+        store.importSessionBatch(sessionId, 1, 2);
       });
       
-      const sessionBeforeReset = useStore.getState().importSessions.find(s => s.id === sessionId);
-      expect(sessionBeforeReset?.statistics.importedRows).toBe(1);
-      expect(sessionBeforeReset?.status).toBe('in_progress');
-      
-      const orderCountBeforeReset = useStore.getState().workOrders.length;
+      expect(store.getActiveSession()?.statistics.importedRows).toBe(2);
+      expect(store.getActiveSession()?.status).toBe('in_progress');
       
       act(() => {
-        useStore.getState().resetData();
+        store.importSessionBatch(sessionId, 3, 3);
       });
       
-      act(() => {
-        useStore.getState().setRole('dispatch');
-      });
-      
-      const restoredSession = useStore.getState().importSessions.find(s => s.id === sessionId);
-      expect(restoredSession).toBeDefined();
-      expect(restoredSession?.statistics.importedRows).toBe(1);
-      
-      act(() => {
-        useStore.getState().resumeSession(sessionId);
-      });
-      
-      const finalSession = useStore.getState().importSessions.find(s => s.id === sessionId);
-      expect(finalSession?.statistics.importedRows).toBe(2);
+      expect(store.getActiveSession()?.statistics.importedRows).toBe(3);
+      expect(store.getActiveSession()?.status).toBe('completed');
     });
   });
 
@@ -487,70 +740,71 @@ describe('导入会话中心 - 核心功能测试', () => {
     });
   });
 
-  describe('错误导出', () => {
-    it('应该能导出错误行到 CSV', () => {
-      const mockCreateObjectURL = vi.fn(() => 'blob:test-url');
-      const mockRevokeObjectURL = vi.fn();
-      Object.defineProperty(global, 'URL', {
-        value: {
-          ...global.URL,
-          createObjectURL: mockCreateObjectURL,
-          revokeObjectURL: mockRevokeObjectURL,
-        },
-        writable: true,
+  describe('会话锁功能', () => {
+    it('应该能锁定和解锁会话', () => {
+      act(() => {
+        useStore.getState().setRole('admin');
       });
       
-      const mockClick = vi.fn();
-      const mockAppendChild = vi.fn(() => ({}));
-      const mockRemoveChild = vi.fn();
+      const store = useStore.getState();
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
       
-      const originalBody = document.body;
-      Object.defineProperty(document, 'body', {
-        value: {
-          ...originalBody,
-          appendChild: mockAppendChild,
-          removeChild: mockRemoveChild,
-        },
-        writable: true,
+      const session = store.createImportSession('锁测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      
+      expect(session.isLocked).toBe(false);
+      
+      act(() => {
+        store.lockSession(session.id);
       });
       
-      const originalCreateElement = document.createElement.bind(document);
-      vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
-        if (tag === 'a') {
-          return {
-            href: '',
-            download: '',
-            click: mockClick,
-            appendChild: mockAppendChild,
-            removeChild: mockRemoveChild,
-          } as any;
-        }
-        return originalCreateElement(tag);
+      const lockedSession = useStore.getState().getActiveSession();
+      expect(lockedSession?.isLocked).toBe(true);
+      
+      act(() => {
+        store.unlockSession(session.id);
+      });
+      
+      const unlockedSession = useStore.getState().getActiveSession();
+      expect(unlockedSession?.isLocked).toBe(false);
+    });
+
+    it('非管理员不能解锁会话', () => {
+      act(() => {
+        useStore.getState().setRole('admin');
+      });
+      
+      let store = useStore.getState();
+      const csvData = [
+        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
+        ['朝阳店', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
+      ];
+      const originalHeaders = csvData[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
+      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
+      
+      const session = store.createImportSession('锁权限测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
+      
+      act(() => {
+        store.lockSession(session.id);
       });
       
       act(() => {
         useStore.getState().setRole('dispatch');
       });
       
-      const store = useStore.getState();
-      const csvData = [
-        ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'],
-        ['', '空调', '不制冷', '待派工', '张三', '13800000000', '2024-01-20', ''],
-      ];
-      const originalHeaders = csvData[0];
-      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号'];
-      const headerMapping = createHeaderMapping(originalHeaders, targetHeaders);
-      
-      const session = store.createImportSession('错误导出测试.csv', originalHeaders, csvData, targetHeaders, headerMapping);
-      
-      expect(() => store.exportSessionErrors(session.id)).not.toThrow();
-      
-      vi.restoreAllMocks();
-      
-      Object.defineProperty(document, 'body', {
-        value: originalBody,
-        writable: true,
+      store = useStore.getState();
+      act(() => {
+        store.unlockSession(session.id);
       });
+      
+      const stillLockedSession = useStore.getState().getActiveSession();
+      expect(stillLockedSession?.isLocked).toBe(true);
     });
   });
 

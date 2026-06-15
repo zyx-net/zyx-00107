@@ -242,6 +242,7 @@ export const roleNames: Record<Role, string> = {
   dispatch: '调度',
   engineer: '工程师',
   quality: '质检',
+  admin: '管理员',
 };
 
 export const roleColors: Record<Role, string> = {
@@ -249,6 +250,7 @@ export const roleColors: Record<Role, string> = {
   dispatch: '#e67e22',
   engineer: '#27ae60',
   quality: '#9b59b6',
+  admin: '#e74c3c',
 };
 
 export const statusColors: Record<string, string> = {
