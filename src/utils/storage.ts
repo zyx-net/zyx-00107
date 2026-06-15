@@ -1,4 +1,4 @@
-import { WorkOrder, Timeline, FilterState, Role, ExportResult, ImportResult, ImportDraft } from '../types';
+import { WorkOrder, Timeline, FilterState, Role, ExportResult, ImportResult, ImportDraft, ImportSession } from '../types';
 
 const STORAGE_KEYS = {
   WORK_ORDERS: 'repair_work_orders',
@@ -8,6 +8,8 @@ const STORAGE_KEYS = {
   EXPORTS: 'repair_exports',
   IMPORTS: 'repair_imports',
   IMPORT_DRAFT: 'repair_import_draft',
+  IMPORT_SESSIONS: 'repair_import_sessions',
+  ACTIVE_SESSION_ID: 'repair_active_session_id',
 } as const;
 
 export const storage = {
@@ -79,6 +81,27 @@ export const storage = {
       localStorage.setItem(STORAGE_KEYS.IMPORT_DRAFT, JSON.stringify(draft));
     } else {
       localStorage.removeItem(STORAGE_KEYS.IMPORT_DRAFT);
+    }
+  },
+
+  getImportSessions(): ImportSession[] {
+    const data = localStorage.getItem(STORAGE_KEYS.IMPORT_SESSIONS);
+    return data ? JSON.parse(data) : [];
+  },
+
+  setImportSessions(sessions: ImportSession[]): void {
+    localStorage.setItem(STORAGE_KEYS.IMPORT_SESSIONS, JSON.stringify(sessions));
+  },
+
+  getActiveSessionId(): string | null {
+    return localStorage.getItem(STORAGE_KEYS.ACTIVE_SESSION_ID);
+  },
+
+  setActiveSessionId(sessionId: string | null): void {
+    if (sessionId) {
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_SESSION_ID, sessionId);
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.ACTIVE_SESSION_ID);
     }
   },
 

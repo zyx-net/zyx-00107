@@ -5,16 +5,20 @@ import { WorkOrderList } from "../components/WorkOrderList";
 import { WorkOrderDetail } from "../components/WorkOrderDetail";
 import { ImportPreviewModal } from "../components/ImportPreviewModal";
 import { ImportHistory } from "../components/ImportHistory";
+import { ImportSessionCenter } from "../components/ImportSessionCenter";
+import { ImportSessionWorkflow } from "../components/ImportSessionWorkflow";
 import { useStore } from "../store/useStore";
-import { Settings, Download, RotateCcw, Upload, Lock } from "lucide-react";
+import { Settings, Download, RotateCcw, Upload, Lock, FolderOpen } from "lucide-react";
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { useState, useRef } from "react";
 import { clsx } from "clsx";
 
 export default function Home() {
-  const { resetData, getFilteredOrders, stores, exportOrders, currentRole } = useStore();
+  const { resetData, getFilteredOrders, stores, exportOrders, currentRole, createImportSession } = useStore();
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showSessionCenter, setShowSessionCenter] = useState(false);
+  const [showSessionWorkflow, setShowSessionWorkflow] = useState(false);
   const [importFileName, setImportFileName] = useState('');
   const [importCsvData, setImportCsvData] = useState<string[][]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -77,6 +81,52 @@ export default function Home() {
       setImportFileName(file.name);
       setImportCsvData(data);
       setShowImportModal(true);
+    };
+    reader.readAsText(file, 'UTF-8');
+    
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleCreateSession = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      const data = parseCSV(text);
+      
+      if (data.length < 2) {
+        alert('CSV 文件内容为空或格式不正确');
+        return;
+      }
+
+      const headers = data[0];
+      const targetHeaders = ['门店名称', '设备类型', '故障描述', '状态', '联系人', '联系电话', '期望上门时间', '工单号', '工程师'];
+      const headerMapping: Record<number, number> = {};
+      
+      headers.forEach((header, index) => {
+        const normalizedHeader = header.trim();
+        const targetIndex = targetHeaders.findIndex(h => 
+          normalizedHeader.includes(h) || h.includes(normalizedHeader)
+        );
+        if (targetIndex !== -1) {
+          headerMapping[index] = targetIndex;
+        }
+      });
+
+      const session = createImportSession(
+        file.name,
+        headers,
+        data,
+        targetHeaders,
+        headerMapping
+      );
+      
+      setShowSessionCenter(false);
+      setShowSessionWorkflow(true);
     };
     reader.readAsText(file, 'UTF-8');
     
@@ -186,13 +236,22 @@ export default function Home() {
                 导出CSV
               </button>
               {canImport ? (
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-xl font-medium transition-all duration-200 border border-blue-600 hover:border-blue-500"
-                >
-                  <Upload className="w-4 h-4" />
-                  导入CSV
-                </button>
+                <>
+                  <button
+                    onClick={() => setShowSessionCenter(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-xl font-medium transition-all duration-200 border border-purple-600 hover:border-purple-500"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    导入会话中心
+                  </button>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-xl font-medium transition-all duration-200 border border-blue-600 hover:border-blue-500"
+                  >
+                    <Upload className="w-4 h-4" />
+                    快速导入
+                  </button>
+                </>
               ) : (
                 <button
                   disabled
@@ -240,6 +299,22 @@ export default function Home() {
         csvData={importCsvData}
         fileName={importFileName}
       />
+
+      <ImportSessionCenter
+        isOpen={showSessionCenter}
+        onClose={() => setShowSessionCenter(false)}
+        onOpenWorkflow={(sessionId) => {
+          setShowSessionCenter(false);
+          setShowSessionWorkflow(true);
+        }}
+      />
+
+      {showSessionWorkflow && (
+        <ImportSessionWorkflow
+          sessionId={useStore.getState().activeSessionId || ''}
+          onClose={() => setShowSessionWorkflow(false)}
+        />
+      )}
     </div>
   );
 }
